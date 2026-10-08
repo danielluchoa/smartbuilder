@@ -1,0 +1,1 @@
+{"compilerOptions":{"allowJs":true,"esModuleInterop":true,"forceConsistentCasingInFileNames":true,"isolatedModules":true,"module":"ESNext","moduleDetection":"force","moduleResolution":"bundler","noEmit":true,"noUncheckedIndexedAccess":true,"skipLibCheck":true,"strict":true,"target":"ES2022","verbatimModuleSyntax":true}}

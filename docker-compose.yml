@@ -1,0 +1,51 @@
+# SmartBuilder — production stack: app + MySQL 8 on one VPS.
+#
+#   cp .env.example .env   (fill in strong passwords)
+#   docker compose up -d --build
+#   docker compose exec app bun run seed     (demo tenants, once)
+#
+# The app port binds to 127.0.0.1 only: a reverse proxy on the host
+# (Caddy or nginx — DEPLOY.md step 6) terminates TLS and adds the
+# password gate. MySQL is not published on the host at all.
+
+services:
+  db:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-smartbuilder}
+      MYSQL_USER: ${MYSQL_USER:-smartbuilder}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+    volumes:
+      # All tenant data lives in this named volume (photos and blueprints
+      # are stored in the database as data URLs — back this volume up).
+      - db_data:/var/lib/mysql
+      # Runs ONLY on the first boot of an empty volume: creates every
+      # table. On later boots MySQL skips it (data already initialized).
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    # No "ports:" on purpose — MySQL is reachable only from the app
+    # container on the compose network.
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-smartbuilder}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE:-smartbuilder}
+      PORT: "3000"
+      CLIENT_DIST: /app/client/dist
+    ports:
+      # Localhost only — the reverse proxy is the public entry point.
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+
+volumes:
+  db_data:

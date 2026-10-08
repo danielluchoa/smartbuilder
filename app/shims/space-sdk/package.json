@@ -1,0 +1,1 @@
+{"description":"Local stand-in for the Muse artifact runtime SDK, so the SmartBuilder source runs unchanged outside the Muse shell. '.' re-exports the standalone action runtime; './client' is the browser RPC client.","exports":{".":"./index.ts","./client":"./client.ts"},"name":"@hatch/space-sdk","private":true,"type":"module","version":"1.0.0"}

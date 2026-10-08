@@ -1,0 +1,6 @@
+app/node_modules
+app/client/dist
+app/client/.tsbuildinfo*
+app/server/.tsbuildinfo*
+audits
+.git

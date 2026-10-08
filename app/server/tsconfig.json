@@ -1,0 +1,1 @@
+{"compilerOptions":{"lib":["ES2022"],"paths":{"@hatch/space-sdk":["../shims/space-sdk/index.ts"],"@hatch/space-sdk/client":["../shims/space-sdk/client.ts"]},"types":["bun"]},"extends":"../tsconfig.base.json","include":["src/**/*","../shims/**/*"]}

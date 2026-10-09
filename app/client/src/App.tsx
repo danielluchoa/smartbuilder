@@ -4,7 +4,6 @@ import { api } from "./api";
 import { GeoMap } from "./GeoMap";
 import { makeStyledInvoicePdf } from "./invoicePdf";
 import { enqueueOutbox, isOffline, setOutboxSyncedHandler, startOutboxAutoSync, syncOutbox, useOnline, useOutboxItems } from "./offline";
-import mysqlSchemaText from "./assets/smartbuilder-mysql-schema.txt";
 import { LanguageContext, LanguageToggle, langDocValue, setCurrentLang, tr, useLanguage, type Lang } from "./i18n";
 
 /* Download a text file the app generated (exports, schema). */
@@ -1405,7 +1404,7 @@ function localizeNotification(n: NotificationLite, tr: (en: string, pt: string, 
         detail: tr(`${s("client")} • Balance due $${s("balance")} • was due ${s("dueDate")}.`, `${s("client")} • Saldo a pagar $${s("balance")} • venceu em ${s("dueDate")}.`, `${s("client")} • Saldo por pagar $${s("balance")} • venció el ${s("dueDate")}.`),
       };
     case "task_assigned": {
-      const hint = tr("Open Dispatch → Field to see it in My tasks.", "Abra Distribuição → Campo para vê-la em Minhas tarefas.", "Abre Distribución → Campo para verla en Mis tareas.");
+      const hint = tr("Open the Field tab to see it in My tasks.", "Abra a aba Campo para vê-la em Minhas tarefas.", "Abre la pestaña Campo para verla en Mis tareas.");
       return {
         title: p.fresh
           ? tr(`📌 New task assigned to you: ${s("task")}`, `📌 Nova tarefa atribuída a você: ${s("task")}`, `📌 Nueva tarea asignada a ti: ${s("task")}`)
@@ -1608,6 +1607,23 @@ export function App() {
     onError: () => setClientLoginErr(tr("Invalid email or password. Check the credentials your contractor shared with you.", "E-mail ou senha inválidos. Verifique as credenciais que sua construtora compartilhou com você.", "Correo o contraseña inválidos. Verifica las credenciales que tu contratista compartió contigo.")),
   });
 
+  // Employee login (email + password)
+  const [empEmailInput, setEmpEmailInput] = useState("");
+  const [empPwInput, setEmpPwInput] = useState("");
+  const [empLoginErr, setEmpLoginErr] = useState("");
+  const employeeLogin = useMutation({
+    mutationFn: () => api.employeeLogin({ email: empEmailInput, password: empPwInput }),
+    onSuccess: (r) => {
+      const s: Session = { companyId: r.companyId, companyName: r.companyName, userId: r.userId, userName: r.userName, role: r.role };
+      localStorage.setItem("sb-session", JSON.stringify(s));
+      setSession(s);
+      setView(r.role === "funcionario" ? "field" : "dashboard");
+      setEmpLoginErr("");
+      setEmpPwInput("");
+    },
+    onError: () => setEmpLoginErr(tr("Invalid email or password.", "E-mail ou senha inválidos.", "Correo o contraseña inválidos.")),
+  });
+
   const boot = useQuery({ queryKey: ["bootstrap"], queryFn: () => api.getBootstrap({}) });
 
   /* Keep the saved session in sync with the server (e.g. a renamed demo
@@ -1685,46 +1701,24 @@ export function App() {
             </div>
             <LanguageToggle compact />
           </div>
-          <p className="mt-4 text-sm text-white/80">{tr("Pick a company and a user to sign in. This is a demo login — no password — so you can test the flows and the separation between companies.", "Escolha uma empresa e um usuário para entrar. Este é um login de demonstração — sem senha — para você testar os fluxos e a separação entre empresas.", "Elige una empresa y un usuario para iniciar sesión. Este es un inicio de sesión de demostración — sin contraseña — para que puedas probar los flujos y la separación entre empresas.")}</p>
+          <p className="mt-4 text-sm text-white/80">{tr("Sign in with your company email and password.", "Entre com seu e-mail da empresa e senha.", "Inicia sesión con tu correo de la empresa y contraseña.")}</p>
 
           {boot.isPending && <p className="mt-6 text-white/70">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
           {boot.error && <p className="mt-6 text-red-300">{tr("Something went wrong loading.", "Algo deu errado ao carregar.", "Algo salió mal al cargar.")} <button className="underline" onClick={() => boot.refetch()}>{tr("Reload", "Recarregar", "Recargar")}</button></p>}
           {boot.data && (
             <div className="mt-6 space-y-5">
-              {boot.data.companies.map((c) => (
-                <div key={c.id} className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-bold text-white">{c.name}</p>
-                    <span className="flex shrink-0 items-center gap-1.5">
-                      <span className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${c.status === "suspended" ? "bg-red-500/20 text-red-300" : c.status === "trial" ? "bg-amber-400/20 text-amber-300" : "bg-green-400/20 text-green-300"}`}>{c.status === "suspended" ? tr("Suspended", "Suspensa", "Suspendida") : c.status === "trial" ? tr("Trial", "Teste", "Prueba") : tr("Active", "Ativo", "Activa")}</span>
-                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-xs font-mono text-white/70">{c.code}</span>
-                    </span>
-                  </div>
-                  {c.status === "suspended" ? (
-                    <p className="mt-3 rounded-xl bg-red-500/10 px-3 py-2.5 text-sm text-red-200">{tr("This company is suspended — sign-in is disabled and its data is preserved. The platform owner can reactivate it from the owner panel.", "Esta empresa está suspensa — o login está desativado e os dados estão preservados. O dono da plataforma pode reativá-la no painel do proprietário.", "Esta empresa está suspendida: el inicio de sesión está desactivado y sus datos se conservan. El propietario de la plataforma puede reactivarla desde el panel del propietario.")}</p>
-                  ) : (
-                  <div className="mt-3 space-y-2">
-                    {boot.data.users.filter((u) => u.companyId === c.id).map((u) => (
-                      <button
-                        key={u.id}
-                        aria-label={tr(`Sign in as ${u.name} at ${c.name}`, `Entrar como ${u.name} em ${c.name}`, `Iniciar sesión como ${u.name} en ${c.name}`)}
-                        onClick={() => login({ companyId: c.id, companyName: c.name, userId: u.id, userName: u.name, role: u.role })}
-                        className="flex w-full items-center justify-between rounded-xl bg-white px-4 py-3 text-left active:opacity-80"
-                      >
-                        <span>
-                          <span className="block font-semibold text-[#12222f]">{u.name}</span>
-                          <span className="block text-xs text-[#5b6b7a]">{u.trade || roleLabel(u.role)}</span>
-                        </span>
-                        <Badge text={roleLabel(u.role)} tone={u.role === "admin" ? "navy" : u.role === "gerente" ? "amber" : "gray"} />
-                      </button>
-                    ))}
-                    {boot.data.users.filter((u) => u.companyId === c.id).length === 0 && (
-                      <p className="text-sm text-white/50">{tr("No users in this company yet.", "Nenhum usuário nesta empresa ainda.", "Todavía no hay usuarios en esta empresa.")}</p>
-                    )}
-                  </div>
-                  )}
-                </div>
-              ))}
+              <form className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10 space-y-3" onSubmit={(e) => { e.preventDefault(); employeeLogin.mutate(); }}>
+                <Field label={tr("Email", "E-mail", "Correo")}>
+                  <input aria-label={tr("Company email", "E-mail da empresa", "Correo de la empresa")} type="email" autoComplete="email" className="w-full rounded-xl bg-white px-4 py-2.5 text-sm text-[#12222f]" value={empEmailInput} onChange={(e) => setEmpEmailInput(e.target.value)} placeholder="you@company.com" required />
+                </Field>
+                <Field label={tr("Password", "Senha", "Contraseña")}>
+                  <input aria-label={tr("Password", "Senha", "Contraseña")} type="password" autoComplete="current-password" className="w-full rounded-xl bg-white px-4 py-2.5 text-sm text-[#12222f]" value={empPwInput} onChange={(e) => setEmpPwInput(e.target.value)} required />
+                </Field>
+                <button type="submit" disabled={employeeLogin.isPending || !empEmailInput.trim() || !empPwInput} className="w-full rounded-xl bg-[#f97316] px-4 py-2.5 text-sm font-bold text-white active:opacity-80 disabled:opacity-40">
+                  {employeeLogin.isPending ? tr("Signing in…", "Entrando…", "Iniciando…") : tr("Sign in", "Entrar", "Iniciar sesión")}
+                </button>
+                {empLoginErr && <p className="text-sm font-semibold text-red-300" role="alert">{empLoginErr}</p>}
+              </form>
             </div>
           )}
           <div className="mt-6 rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
@@ -1780,15 +1774,18 @@ export function App() {
 
   const navItems: { key: View; label: string; icon: string; show: boolean }[] = [
     { key: "dashboard", label: tr("Dashboard", "Painel", "Panel"), icon: "📊", show: isManager },
-    { key: "dispatch", label: tr("Dispatch", "Distribuição", "Distribución"), icon: "🧭", show: true },
+    { key: "dispatch", label: tr("Dispatch", "Distribuição", "Distribución"), icon: "🧭", show: isManager },
     { key: "projects", label: tr("Projects", "Obras", "Obras"), icon: "🏗️", show: true },
+    { key: "field", label: tr("Field", "Campo", "Campo"), icon: "📍", show: true },
+    { key: "entries", label: tr("Time", "Ponto", "Horas"), icon: "🕐", show: true },
     { key: "payroll", label: tr("Payroll", "Folha de pagamento", "Nómina"), icon: "💰", show: canMoney },
     { key: "expenses", label: tr("Expenses", "Despesas", "Gastos"), icon: "🧾", show: canMoney },
+    { key: "costs", label: tr("Costs", "Custos", "Costos"), icon: "📊", show: canMoney },
     { key: "invoices", label: tr("Invoices", "Faturas", "Facturas"), icon: "📄", show: canMoney },
     { key: "team", label: tr("Team", "Equipe", "Equipo"), icon: "👥", show: true },
-    { key: "clients", label: tr("Clients", "Clientes", "Clientes"), icon: "🤝", show: true },
+    { key: "clients", label: tr("Clients", "Clientes", "Clientes"), icon: "🤝", show: isManager },
     { key: "services", label: tr("Services", "Serviços", "Servicios"), icon: "🧱", show: isManager },
-    { key: "fleet", label: tr("Fleet", "Frota", "Flota"), icon: "🚐", show: isManager },
+    { key: "fleet", label: tr("Fleet", "Frota", "Flota"), icon: "🚐", show: true },
     { key: "settings", label: tr("Settings", "Configurações", "Configuración"), icon: "⚙️", show: isAdmin },
   ];
   const openNewInvoice = (clientId: number | null, projectId: number | null) => { setInvoicePrefill({ clientId, projectId }); setSelectedInvoice(null); setView("invoices"); };
@@ -1824,30 +1821,23 @@ export function App() {
 
       <main className="mx-auto max-w-5xl px-4 pt-4">
         {view === "dashboard" && isManager && <Dashboard cid={cid} session={session} onGo={(v) => setView(v)} />}
-        {(view === "dispatch" || view === "field" || view === "entries") && (
-          <DispatchHub
-            cid={cid}
-            session={session}
-            section={view === "field" ? "field" : view === "entries" ? "time" : "distribution"}
-            onSection={(s) => setView(s === "field" ? "field" : s === "time" ? "entries" : "dispatch")}
-            onOpenJob={(projectId, jobId) => { setSelectedProject(projectId); setPendingJobId(jobId); setView("projects"); }}
-            focusSheetId={focusSheetId}
-            onFocusConsumed={() => setFocusSheetId(null)}
-          />
-        )}
+        {view === "dispatch" && isManager && <DispatchView cid={cid} session={session} />}
         {view === "projects" && <Projects cid={cid} session={session} onOpen={(id) => { setSelectedProject(id); }} selected={selectedProject} onCloseDetail={() => setSelectedProject(null)} onNewInvoice={openNewInvoice} pendingJobId={pendingJobId} onConsumePendingJob={() => setPendingJobId(null)} />}
+        {view === "field" && <FieldView cid={cid} session={session} onOpenJob={(projectId, jobId) => { setSelectedProject(projectId); setPendingJobId(jobId); setView("projects"); }} />}
+        {view === "entries" && <TimeEntries cid={cid} session={session} focusSheetId={focusSheetId} onFocusConsumed={() => setFocusSheetId(null)} />}
         {view === "payroll" && canMoney && <Payroll cid={cid} session={session} />}
         {view === "expenses" && canMoney && <Expenses cid={cid} session={session} />}
+        {view === "costs" && canMoney && <CostsView cid={cid} session={session} />}
         {view === "invoices" && canMoney && <Invoices cid={cid} session={session} selected={selectedInvoice} onSelect={setSelectedInvoice} prefill={invoicePrefill} onPrefillUsed={() => setInvoicePrefill(null)} />}
         {view === "team" && <Team cid={cid} session={session} />}
         {view === "clients" && <Clients cid={cid} session={session} onOpenProject={(id) => { setSelectedProject(id); setView("projects"); }} onOpenInvoice={(id) => { setSelectedInvoice(id); setView("invoices"); }} onNewInvoice={openNewInvoice} />}
         {view === "services" && isManager && <ServicesView cid={cid} session={session} />}
         {view === "fleet" && isManager && <FleetView cid={cid} session={session} />}
         {view === "settings" && isAdmin && <CompanySettings cid={cid} session={session} />}
-        {(view === "dashboard" && !isManager) || (view === "payroll" && !canMoney) || ((view === "expenses" || view === "invoices") && !canMoney) || (view === "services" && !isManager) || (view === "fleet" && !isManager) ? (
+        {(view === "dashboard" && !isManager) || (view === "dispatch" && !isManager) || (view === "payroll" && !canMoney) || ((view === "expenses" || view === "invoices" || view === "costs") && !canMoney) || (view === "services" && !isManager) || (view === "clients" && !isManager) ? (
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-center">
             <p className="font-semibold">{tr("Restricted for your role", "Restrito para o seu perfil", "Restringido para tu rol")}</p>
-            <p className="mt-1 text-sm text-[var(--dim)]">{tr(`As ${roleLabel(session.role)}, use Dispatch (Field and Time & hours), Projects, Team, and Clients.`, `Como ${roleLabel(session.role)}, use Distribuição (Campo e Ponto e horas), Obras, Equipe e Clientes.`, `Como ${roleLabel(session.role)}, usa Distribución (Campo y Horas), Obras, Equipo y Clientes.`)}</p>
+            <p className="mt-1 text-sm text-[var(--dim)]">{session.role === "funcionario" ? tr(`As ${roleLabel(session.role)}, use the Field, Projects, Time, and Team tabs.`, `Como ${roleLabel(session.role)}, use as abas Campo, Obras, Ponto e Equipe.`, `Como ${roleLabel(session.role)}, usa las pestañas Campo, Obras, Horas y Equipo.`) : tr(`As ${roleLabel(session.role)}, use the Field, Projects, Time, Team, and Clients tabs.`, `Como ${roleLabel(session.role)}, use as abas Campo, Obras, Ponto, Equipe e Clientes.`, `Como ${roleLabel(session.role)}, usa las pestañas Campo, Obras, Horas, Equipo y Clientes.`)}</p>
             <button className={`${btnNavy} mt-4`} onClick={() => setView("field")}>{tr("Go to Field", "Ir para o Campo", "Ir a Campo")}</button>
           </div>
         ) : null}
@@ -1856,21 +1846,18 @@ export function App() {
       {/* bottom nav */}
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-[var(--border)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] print:hidden" aria-label={tr("Main navigation", "Navegação principal", "Navegación principal")}>
         <div className="mx-auto flex max-w-5xl overflow-x-auto">
-          {navItems.filter((n) => n.show).map((n) => {
-            const active = view === n.key || (n.key === "dispatch" && (view === "field" || view === "entries"));
-            return (
+          {navItems.filter((n) => n.show).map((n) => (
             <button
               key={n.key}
               aria-label={n.label}
-              aria-current={active ? "page" : undefined}
+              aria-current={view === n.key ? "page" : undefined}
               onClick={() => { setView(n.key); setSelectedProject(null); setPendingJobId(null); if (n.key !== "invoices") setSelectedInvoice(null); }}
-              className={`flex min-w-[4.2rem] flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold ${active ? "text-[#f97316]" : "text-[var(--dim)]"}`}
+              className={`flex min-w-[4.2rem] flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-semibold ${view === n.key ? "text-[#f97316]" : "text-[var(--dim)]"}`}
             >
               <span className="text-lg leading-none">{n.icon}</span>
               {n.label}
             </button>
-            );
-          })}
+          ))}
         </div>
       </nav>
     </div>
@@ -1992,7 +1979,7 @@ function Dashboard({ cid, session, onGo }: { cid: string; session: Session; onGo
         <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center">
           <p className="text-4xl">🏗️</p>
           <p className="mt-2 font-semibold">{tr("No data in this company yet", "Nenhum dado nesta empresa ainda", "Todavía no hay datos en esta empresa")}</p>
-          <p className="mt-1 text-sm text-[var(--dim)]">{tr("Create your first project in the Projects tab and check in from Dispatch → Field to see the dashboard come alive.", "Crie sua primeira obra na aba Obras e registre o ponto em Distribuição → Campo para ver o painel ganhar vida.", "Crea tu primera obra en la pestaña Obras y registra tu entrada en Distribución → Campo para ver el panel cobrar vida.")}</p>
+          <p className="mt-1 text-sm text-[var(--dim)]">{tr("Create your first project in the Projects tab and check in from the Field tab to see the dashboard come alive.", "Crie sua primeira obra na aba Obras e registre o ponto na aba Campo para ver o painel ganhar vida.", "Crea tu primera obra en la pestaña Obras y registra tu entrada en la pestaña Campo para ver el panel cobrar vida.")}</p>
         </div>
       )}
 
@@ -2487,53 +2474,6 @@ function shiftDateStr(dateStr: string, days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-/* Dispatch hub — Field (Campo), Time clock (Ponto) and Hours now live
-   together inside Dispatch, so whoever runs the distribution manages
-   assignments, check-ins and hours from one place. The three sections
-   keep their existing views (deep links via view "field"/"entries"
-   land on the matching section); only the navigation is grouped. */
-type DispatchSection = "distribution" | "field" | "time";
-function DispatchHub({ cid, session, section, onSection, onOpenJob, focusSheetId, onFocusConsumed }: {
-  cid: string;
-  session: Session;
-  section: DispatchSection;
-  onSection: (s: DispatchSection) => void;
-  onOpenJob: (projectId: number, jobId: number) => void;
-  focusSheetId?: number | null;
-  onFocusConsumed?: () => void;
-}) {
-  const isManager = session.role === "gerente" || session.role === "admin";
-  const effective: DispatchSection = !isManager && section === "distribution" ? "field" : section;
-  const sections: { key: DispatchSection; label: string; icon: string; show: boolean }[] = [
-    { key: "distribution", label: tr("Distribution", "Distribuição", "Distribución"), icon: "🧭", show: isManager },
-    { key: "field", label: tr("Field", "Campo", "Campo"), icon: "📍", show: true },
-    { key: "time", label: tr("Time & hours", "Ponto e horas", "Horas"), icon: "🕐", show: true },
-  ];
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-1 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1" role="tablist" aria-label={tr("Dispatch sections: distribution, field, time and hours", "Seções da distribuição: distribuição, campo, ponto e horas", "Secciones de distribución: distribución, campo y horas")}>
-        {sections.filter((s) => s.show).map((s) => (
-          <button
-            key={s.key}
-            type="button"
-            role="tab"
-            aria-selected={effective === s.key}
-            aria-current={effective === s.key ? "page" : undefined}
-            aria-label={s.label}
-            onClick={() => onSection(s.key)}
-            className={`flex flex-1 flex-col items-center gap-0.5 rounded-xl py-2 text-[11px] font-bold sm:flex-row sm:justify-center sm:gap-1.5 sm:text-sm ${effective === s.key ? "bg-[#f97316] text-white" : "text-[var(--dim)] active:opacity-70"}`}
-          >
-            <span aria-hidden="true">{s.icon}</span> {s.label}
-          </button>
-        ))}
-      </div>
-      {effective === "distribution" && isManager && <DispatchView cid={cid} session={session} />}
-      {effective === "field" && <FieldView cid={cid} session={session} onOpenJob={onOpenJob} />}
-      {effective === "time" && <TimeEntries cid={cid} session={session} focusSheetId={focusSheetId} onFocusConsumed={onFocusConsumed} />}
-    </div>
-  );
-}
-
 function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const qc = useQueryClient();
   const [date, setDate] = useState(todayInput());
@@ -2624,10 +2564,17 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")}</h2>
+      <div className="print:hidden">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")}</h2>
+          <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
+        </div>
         <p className="text-sm text-[var(--dim)]">{tr("Work distribution — who does what, on every project, at a glance.", "Distribuição de trabalhos — quem faz o quê, em cada obra, de relance.", "Distribución de trabajos: quién hace qué, en cada obra, de un vistazo.")}</p>
         <p className="mt-2 rounded-xl bg-[#0f2a44] px-3 py-2 text-sm font-bold text-white">{tr("Jobs have crews. Tasks have assignees.", "Trabalhos têm equipes. Tarefas têm responsáveis.", "Los trabajos tienen equipos. Las tareas tienen responsables.")}</p>
+      </div>
+      <div className="hidden print:block">
+        <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")} — {date}</h2>
+        <p className="text-sm text-gray-600">{session.companyName}</p>
       </div>
 
       {/* Day selector + Unassigned filter */}
@@ -2909,7 +2856,7 @@ function FleetView({ cid, session }: { cid: string; session: Session }) {
           <h2 className="text-xl font-bold">{tr("Fleet", "Frota", "Flota")}</h2>
           <p className="text-sm text-[var(--dim)]">{tr("Vehicles, who is using them, fuel, maintenance, and tickets.", "Veículos, quem está usando, combustível, manutenção e multas.", "Vehículos, quién los usa, combustible, mantenimiento y multas.")}</p>
         </div>
-        <button type="button" className={btnPrimary} aria-label={tr("New vehicle", "Novo veículo", "Nuevo vehículo")} aria-expanded={showForm} onClick={() => { setShowForm((s) => !s); setMsg(""); }}>{showForm ? tr("Close", "Fechar", "Cerrar") : tr("+ New vehicle", "+ Novo veículo", "+ Nuevo vehículo")}</button>
+        {session.role !== "funcionario" && <button type="button" className={btnPrimary} aria-label={tr("New vehicle", "Novo veículo", "Nuevo vehículo")} aria-expanded={showForm} onClick={() => { setShowForm((s) => !s); setMsg(""); }}>{showForm ? tr("Close", "Fechar", "Cerrar") : tr("+ New vehicle", "+ Novo veículo", "+ Nuevo vehículo")}</button>}
       </div>
 
       {msg && <p className="rounded-xl bg-[var(--surface)] px-3 py-2 text-sm font-semibold ring-1 ring-[var(--border)]" role="status">{msg}</p>}
@@ -2997,8 +2944,9 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
   const [eName, setEName] = useState(""); const [eMake, setEMake] = useState(""); const [eModel, setEModel] = useState("");
   const [eYear, setEYear] = useState(""); const [ePlate, setEPlate] = useState(""); const [eVin, setEVin] = useState("");
   const [eStatus, setEStatus] = useState("active"); const [eMileage, setEMileage] = useState("");
+  const [eEzpass, setEEzpass] = useState(false); const [eTagNumber, setETagNumber] = useState("");
   const saveVehicle = useMutation({
-    mutationFn: () => api.updateVehicle({ companyId: cid, actorId, vehicleId, name: eName, make: eMake, model: eModel, year: eYear.trim() ? Number(eYear) || 0 : 0, plate: ePlate, vin: eVin, status: eStatus as "active" | "in_shop" | "inactive", mileage: eMileage.trim() ? Math.round(Number(eMileage.replace(/[^0-9.]/g, "")) || 0) : (v?.mileage ?? 0) }),
+    mutationFn: () => api.updateVehicle({ companyId: cid, actorId, vehicleId, name: eName, make: eMake, model: eModel, year: eYear.trim() ? Number(eYear) || 0 : 0, plate: ePlate, vin: eVin, status: eStatus as "active" | "in_shop" | "inactive", mileage: eMileage.trim() ? Math.round(Number(eMileage.replace(/[^0-9.]/g, "")) || 0) : (v?.mileage ?? 0), ezpass: eEzpass ? 1 : 0, tagNumber: eTagNumber }),
     onSuccess: () => { invalidate(); setEditing(false); setMsg(tr("Vehicle saved. ✅", "Veículo salvo. ✅", "Vehículo guardado. ✅")); },
     onError: () => setMsg(tr("Could not save this vehicle.", "Não foi possível salvar este veículo.", "No se pudo guardar este vehículo.")),
   });
@@ -3019,8 +2967,10 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
   const addMileage = useMutation({ mutationFn: () => api.addVehicleMileage({ companyId: cid, actorId, vehicleId, logDate: mDate, odometer: Math.round(Number(mOdo.replace(/[^0-9.]/g, "")) || 0), notes: mNotes }), onSuccess: () => { invalidate(); setMOdo(""); setMNotes(""); }, onError: () => setMsg(tr("Could not save the mileage reading.", "Não foi possível salvar a leitura de quilometragem.", "No se pudo guardar la lectura de millaje.")) });
 
   /* fuel */
-  const [fuDate, setFuDate] = useState(todayInput()); const [fuGal, setFuGal] = useState(""); const [fuAmt, setFuAmt] = useState(""); const [fuOdo, setFuOdo] = useState(""); const [fuProj, setFuProj] = useState(""); const [fuNotes, setFuNotes] = useState("");
-  const addFuel = useMutation({ mutationFn: () => api.addVehicleFuel({ companyId: cid, actorId, vehicleId, logDate: fuDate, gallons: parseFloat(fuGal.replace(",", ".")) || 0, amount: parseMoney(fuAmt), odometer: Math.round(Number(fuOdo.replace(/[^0-9.]/g, "")) || 0), projectId: fuProj ? Number(fuProj) : null, notes: fuNotes }), onSuccess: () => { invalidate(); setFuGal(""); setFuAmt(""); setFuOdo(""); setFuNotes(""); }, onError: () => setMsg(tr("Could not save the fuel entry.", "Não foi possível salvar o abastecimento.", "No se pudo guardar la carga de combustible.")) });
+  const [fuDate, setFuDate] = useState(todayInput()); const [fuPriceGal, setFuPriceGal] = useState(""); const [fuAmt, setFuAmt] = useState(""); const [fuOdo, setFuOdo] = useState(""); const [fuProj, setFuProj] = useState(""); const [fuNotes, setFuNotes] = useState(""); const [fuReceipt, setFuReceipt] = useState("");
+  const fuCameraRef = useRef<HTMLInputElement | null>(null);
+  const fuGalleryRef = useRef<HTMLInputElement | null>(null);
+  const addFuel = useMutation({ mutationFn: () => api.addVehicleFuel({ companyId: cid, actorId, vehicleId, logDate: fuDate, gallons: 0, amount: parseMoney(fuAmt), odometer: Math.round(Number(fuOdo.replace(/[^0-9.]/g, "")) || 0), projectId: fuProj ? Number(fuProj) : null, notes: fuNotes + (fuPriceGal.trim() ? ` [${tr("Price/gal", "Preço/gal", "Precio/gal")}: $${fuPriceGal.trim()}]` : ""), receiptPhoto: fuReceipt }), onSuccess: () => { invalidate(); setFuPriceGal(""); setFuAmt(""); setFuOdo(""); setFuNotes(""); setFuReceipt(""); }, onError: () => setMsg(tr("Could not save the fuel entry.", "Não foi possível salvar o abastecimento.", "No se pudo guardar la carga de combustible.")) });
 
   /* maintenance */
   const [maDate, setMaDate] = useState(todayInput()); const [maType, setMaType] = useState<string>("oil_change"); const [maCost, setMaCost] = useState(""); const [maVendor, setMaVendor] = useState(""); const [maOdo, setMaOdo] = useState(""); const [maNotes, setMaNotes] = useState(""); const [maReceipt, setMaReceipt] = useState(""); const [maProj, setMaProj] = useState("");
@@ -3054,6 +3004,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
   if (detailQ.error || !d || !v) return (<div><button type="button" onClick={onBack} className="text-sm font-semibold text-[#f97316]" aria-label={tr("Back to fleet", "Voltar para a frota", "Volver a la flota")}>← {tr("Back to Fleet", "Voltar para a Frota", "Volver a la Flota")}</button><p className="py-10 text-center text-sm font-semibold text-red-600">{tr("Could not load this vehicle.", "Não foi possível carregar este veículo.", "No se pudo cargar este vehículo.")}</p></div>);
 
   const sectionCls = "rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4";
+  const isEmployee = session.role === "funcionario";
   const currentAssignments = d.assignments.filter((a) => a.current);
   const history = d.assignments.filter((a) => !a.current);
 
@@ -3072,13 +3023,14 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
         </div>
         <p className="mt-1 text-sm text-[var(--dim)]">{[v.year > 0 ? String(v.year) : "", v.make, v.model].filter(Boolean).join(" ")}{v.plate ? ` • ${tr("Plate", "Placa", "Placa")} ${v.plate}` : ""}{v.vin ? ` • VIN ${v.vin}` : ""}</p>
         <p className="mt-1 text-sm font-semibold">🛣️ {tr("Odometer:", "Odômetro:", "Odómetro:")} {fmtMiles(v.mileage)}</p>
+        {v.ezpass === 1 && <p className="mt-1 text-sm font-semibold">🟣 EZPass{v.tagNumber ? `: ${v.tagNumber}` : ""}</p>}
         <p className="mt-1 flex flex-wrap gap-1">
           {v.currentUserNames.length > 0 ? v.currentUserNames.map((n) => <span key={n} className="rounded-full bg-[#0f2a44] px-2 py-0.5 text-[11px] font-bold text-white">👤 {n}</span>) : <span className="text-xs text-[var(--dim)]">{tr("Not assigned to anyone right now.", "Não atribuído a ninguém no momento.", "Sin asignar a nadie en este momento.")}</span>}
         </p>
         <p className="mt-2 text-xs text-[var(--dim)]">{tr("Totals:", "Totais:", "Totales:")} ⛽ {fmtUSD(d.totals.fuelCost)} • 🔧 {fmtUSD(d.totals.maintenanceCost)} • 🎫 {fmtUSD(d.totals.ticketsCost)}{d.totals.openTicketsAmount > 0 ? ` (${fmtUSD(d.totals.openTicketsAmount)} ${tr("open", "em aberto", "abiertas")})` : ""}</p>
-        {!editing ? (
+        {!editing && !isEmployee ? (
           <div className="mt-3 flex gap-2">
-            <button type="button" className={btnGhost} aria-label={tr(`Edit vehicle ${v.name}`, `Editar o veículo ${v.name}`, `Editar el vehículo ${v.name}`)} onClick={() => { setEName(v.name); setEMake(v.make); setEModel(v.model); setEYear(v.year > 0 ? String(v.year) : ""); setEPlate(v.plate); setEVin(v.vin); setEStatus(v.status); setEMileage(String(v.mileage)); setEditing(true); }}>{tr("Edit vehicle", "Editar veículo", "Editar vehículo")}</button>
+            <button type="button" className={btnGhost} aria-label={tr(`Edit vehicle ${v.name}`, `Editar o veículo ${v.name}`, `Editar el vehículo ${v.name}`)} onClick={() => { setEName(v.name); setEMake(v.make); setEModel(v.model); setEYear(v.year > 0 ? String(v.year) : ""); setEPlate(v.plate); setEVin(v.vin); setEStatus(v.status); setEMileage(String(v.mileage)); setEEzpass(v.ezpass === 1); setETagNumber(v.tagNumber); setEditing(true); }}>{tr("Edit vehicle", "Editar veículo", "Editar vehículo")}</button>
             {confirmDelete ? (
               <>
                 <span className="self-center text-xs font-bold text-red-600" role="alert">{tr("Delete this vehicle and all its logs?", "Excluir este veículo e todos os registros?", "¿Eliminar este vehículo y todos sus registros?")}</span>
@@ -3107,6 +3059,13 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
             </div>
             <Field label={tr("VIN (optional)", "VIN (opcional)", "VIN (opcional)")}><input aria-label={tr("Vehicle VIN", "VIN do veículo", "VIN del vehículo")} className={inputCls} value={eVin} onChange={(e) => setEVin(e.target.value)} /></Field>
             <Field label={tr("Current mileage (mi)", "Quilometragem atual (mi)", "Millaje actual (mi)")}><input aria-label={tr("Current odometer in miles", "Odômetro atual em milhas", "Odómetro actual en millas")} className={inputCls} inputMode="numeric" value={eMileage} onChange={(e) => setEMileage(e.target.value)} /></Field>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="ezpass-check" checked={eEzpass} onChange={(e) => setEEzpass(e.target.checked)} className="h-4 w-4" />
+              <label htmlFor="ezpass-check" className="text-sm font-semibold">{tr("Has EZPass", "Tem EZPass", "Tiene EZPass")}</label>
+            </div>
+            {eEzpass && (
+              <Field label={tr("Tag number", "Número da tag", "Número de tag")}><input aria-label={tr("EZPass tag number", "Número da tag EZPass", "Número de tag EZPass")} className={inputCls} value={eTagNumber} onChange={(e) => setETagNumber(e.target.value)} placeholder="123456789" /></Field>
+            )}
             <div className="flex gap-2">
               <button type="button" className={btnGhost} onClick={() => setEditing(false)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
               <button className={`${btnNavy} flex-1`} disabled={saveVehicle.isPending || !eName.trim()}>{saveVehicle.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr("Save vehicle", "Salvar veículo", "Guardar vehículo")}</button>
@@ -3115,6 +3074,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
         )}
       </div>
 
+      {!isEmployee && (<>
       {/* currently used by */}
       <div className={sectionCls}>
         <h3 className="font-bold">👥 {tr("Currently used by", "Em uso por", "En uso por")}</h3>
@@ -3142,8 +3102,9 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
             </div>
           </div>
         )}
-      </div>
+      </div></>)}
 
+      {!isEmployee && (<>
       {/* oil settings */}
       <div className={sectionCls}>
         <h3 className="font-bold">🛢️ {tr("Oil change alerts", "Alertas de troca de óleo", "Alertas de cambio de aceite")}</h3>
@@ -3163,8 +3124,9 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
           </div>
           <button className={`${btnNavy} w-full`} disabled={saveOil.isPending}>{saveOil.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr("Save oil settings", "Salvar configurações de óleo", "Guardar configuración de aceite")}</button>
         </form>
-      </div>
+      </div></>)}
 
+      {!isEmployee && (<>
       {/* mileage log */}
       <div className={sectionCls}>
         <h3 className="font-bold">🛣️ {tr("Mileage log", "Registro de quilometragem", "Registro de millaje")}</h3>
@@ -3183,7 +3145,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
           ))}
           {d.mileageLogs.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No mileage readings yet.", "Nenhuma leitura ainda.", "Todavía no hay lecturas.")}</p>}
         </div>
-      </div>
+      </div></>)}
 
       {/* fuel */}
       <div className={sectionCls}>
@@ -3191,8 +3153,8 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
         <form className="mt-2 grid grid-cols-2 gap-2" onSubmit={(e) => { e.preventDefault(); addFuel.mutate(); }}>
           <Field label={tr("Date", "Data", "Fecha")}><input aria-label={tr("Fuel date", "Data do abastecimento", "Fecha de la carga")} type="date" className={inputCls} value={fuDate} onChange={(e) => setFuDate(e.target.value)} required /></Field>
           <Field label={tr("Odometer (mi)", "Odômetro (mi)", "Odómetro (mi)")}><input aria-label={tr("Odometer at fill in miles", "Odômetro no abastecimento em milhas", "Odómetro en la carga en millas")} className={inputCls} inputMode="numeric" value={fuOdo} onChange={(e) => setFuOdo(e.target.value)} placeholder="48,250" required /></Field>
-          <Field label={tr("Gallons", "Galões", "Galones")}><input aria-label={tr("Gallons filled", "Galões abastecidos", "Galones cargados")} className={inputCls} inputMode="decimal" value={fuGal} onChange={(e) => setFuGal(e.target.value)} placeholder="18.5" required /></Field>
-          <Field label={tr("Amount (USD)", "Valor (USD)", "Importe (USD)")}><input aria-label={tr("Fuel amount in US dollars", "Valor do combustível em dólares", "Importe del combustible en dólares")} className={inputCls} inputMode="decimal" value={fuAmt} onChange={(e) => setFuAmt(e.target.value)} placeholder="68.50" required /></Field>
+          <Field label={tr("Price/gal (optional)", "Preço/gal (opcional)", "Precio/gal (opcional)")}><input aria-label={tr("Price per gallon", "Preço por galão", "Precio por galón")} className={inputCls} inputMode="decimal" value={fuPriceGal} onChange={(e) => setFuPriceGal(e.target.value)} placeholder="3.89" /></Field>
+          <Field label={tr("Total (USD)", "Total (USD)", "Total (USD)")}><input aria-label={tr("Fuel total in US dollars", "Total do combustível em dólares", "Total del combustible en dólares")} className={inputCls} inputMode="decimal" value={fuAmt} onChange={(e) => setFuAmt(e.target.value)} placeholder="68.50" required /></Field>
           <div className="col-span-2">
             <Field label={tr("Project (optional)", "Obra (opcional)", "Obra (opcional)")}>
               <select aria-label={tr("Project for this fuel cost", "Obra deste custo de combustível", "Obra de este costo de combustible")} className={inputCls} value={fuProj} onChange={(e) => setFuProj(e.target.value)}>
@@ -3202,19 +3164,30 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
             </Field>
           </div>
           <div className="col-span-2"><Field label={tr("Notes (optional)", "Observações (opcional)", "Notas (opcional)")}><input aria-label={tr("Fuel notes", "Observações do abastecimento", "Notas de la carga")} className={inputCls} value={fuNotes} onChange={(e) => setFuNotes(e.target.value)} /></Field></div>
-          <button className={`${btnNavy} col-span-2 w-full`} disabled={addFuel.isPending || !fuGal.trim() || !fuAmt.trim() || !fuOdo.trim()}>{tr("Add fill-up", "Adicionar abastecimento", "Agregar carga")}</button>
+          <div className="col-span-2">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Receipt photo", "Foto do recibo", "Foto del recibo")}</p>
+            {fuReceipt ? <img src={safeImgSrc(fuReceipt)} alt={tr("Gas receipt photo preview", "Prévia da foto do recibo", "Vista previa de la foto del recibo")} className="mb-2 h-32 w-full rounded-xl object-cover" /> : null}
+            <div className="flex gap-2">
+              <button type="button" className={btnGhost} aria-label={tr("Take a photo of the gas receipt", "Tirar foto do recibo de gasolina", "Tomar foto del recibo de gasolina")} onClick={() => fuCameraRef.current?.click()}>📷 {tr("Take photo", "Tirar foto", "Tomar foto")}</button>
+              <button type="button" className={btnGhost} aria-label={tr("Choose receipt photo from gallery", "Escolher foto do recibo da galeria", "Elegir foto del recibo de la galería")} onClick={() => fuGalleryRef.current?.click()}>🖼️ {tr("Gallery", "Galeria", "Galería")}</button>
+            </div>
+            <input ref={fuCameraRef} type="file" accept="image/*" capture="environment" className="hidden" aria-label={tr("Take receipt photo", "Tirar foto do recibo", "Tomar foto del recibo")} onChange={async (e) => { const f = e.target.files?.[0]; if (f) setFuReceipt(await readPhotoFile(f)); e.target.value = ""; }} />
+            <input ref={fuGalleryRef} type="file" accept="image/*" className="hidden" aria-label={tr("Choose receipt photo from gallery", "Escolher foto do recibo da galeria", "Elegir foto del recibo de la galería")} onChange={async (e) => { const f = e.target.files?.[0]; if (f) setFuReceipt(await readPhotoFile(f)); e.target.value = ""; }} />
+          </div>
+          <button className={`${btnNavy} col-span-2 w-full`} disabled={addFuel.isPending || !fuAmt.trim() || !fuOdo.trim()}>{tr("Add fill-up", "Adicionar abastecimento", "Agregar carga")}</button>
         </form>
         <div className="mt-2 space-y-1">
           {d.fuelLogs.map((f) => (
             <div key={f.id} className="flex items-center justify-between gap-2 rounded-lg bg-[var(--surface2)] px-2.5 py-1.5 text-sm">
-              <span className="min-w-0">{fmtDate(f.logDate)} • {f.gallons} gal • <span className="font-semibold">{fmtUSD(f.amount)}</span> • {fmtMiles(f.odometer)}{f.mpg !== null ? <span className="font-semibold text-green-700 dark:text-green-400"> • {f.mpg} MPG</span> : null}{f.projectName ? <span className="text-[var(--dim)]"> • 🏗️ {f.projectName}</span> : null}{f.notes ? <span className="text-[var(--dim)]"> • {f.notes}</span> : null}</span>
-              <button type="button" className="shrink-0 text-xs font-bold text-red-600" aria-label={tr(`Delete fuel entry on ${fmtDate(f.logDate)}`, `Excluir o abastecimento de ${fmtDate(f.logDate)}`, `Eliminar la carga del ${fmtDate(f.logDate)}`)} onClick={() => deleteLog.mutate({ kind: "fuel", id: f.id })}>{tr("Delete", "Excluir", "Eliminar")}</button>
+              <span className="min-w-0">{f.receiptPhoto ? <img src={safeImgSrc(f.receiptPhoto)} alt={tr("Gas receipt", "Recibo de gasolina", "Recibo de gasolina")} className="mb-1 h-16 w-16 rounded-lg object-cover" /> : null}{fmtDate(f.logDate)} • <span className="font-semibold">{fmtUSD(f.amount)}</span> • {fmtMiles(f.odometer)}{f.projectName ? <span className="text-[var(--dim)]"> • 🏗️ {f.projectName}</span> : null}{f.notes ? <span className="text-[var(--dim)]"> • {f.notes}</span> : null}</span>
+              {!isEmployee && <button type="button" className="shrink-0 text-xs font-bold text-red-600" aria-label={tr(`Delete fuel entry on ${fmtDate(f.logDate)}`, `Excluir o abastecimento de ${fmtDate(f.logDate)}`, `Eliminar la carga del ${fmtDate(f.logDate)}`)} onClick={() => deleteLog.mutate({ kind: "fuel", id: f.id })}>{tr("Delete", "Excluir", "Eliminar")}</button>}
             </div>
           ))}
           {d.fuelLogs.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No fuel entries yet. MPG appears from the second fill-up.", "Nenhum abastecimento ainda. O MPG aparece a partir do segundo abastecimento.", "Todavía no hay cargas. El MPG aparece a partir de la segunda carga.")}</p>}
         </div>
       </div>
 
+      {!isEmployee && (<>
       {/* maintenance */}
       <div className={sectionCls}>
         <h3 className="font-bold">🔧 {tr("Maintenance", "Manutenção", "Mantenimiento")} <span className="text-sm font-semibold text-[var(--dim)]">• {fmtUSD(d.totals.maintenanceCost)}</span></h3>
@@ -3249,8 +3222,9 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
           ))}
           {d.maintenance.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No maintenance yet.", "Nenhuma manutenção ainda.", "Todavía no hay mantenimiento.")}</p>}
         </div>
-      </div>
+      </div></>)}
 
+      {!isEmployee && (<>
       {/* tickets */}
       <div className={sectionCls}>
         <h3 className="font-bold">🎫 {tr("Tickets & fines", "Multas", "Multas")} <span className="text-sm font-semibold text-[var(--dim)]">• {fmtUSD(d.totals.ticketsCost)}{d.totals.openTicketsAmount > 0 ? ` (${fmtUSD(d.totals.openTicketsAmount)} ${tr("open", "em aberto", "abiertas")})` : ""}</span></h3>
@@ -3286,7 +3260,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
           ))}
           {d.tickets.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No tickets. 🎉", "Nenhuma multa. 🎉", "Sin multas. 🎉")}</p>}
         </div>
-      </div>
+      </div></>)}
     </div>
   );
 }
@@ -3423,7 +3397,7 @@ function Projects({ cid, session, onOpen, selected, onCloseDetail, onNewInvoice,
               <p className="font-bold leading-snug">{p.name}</p>
               <Badge text={projectStatusLabel(p.status)} tone={p.status === "andamento" ? "green" : p.status === "concluida" ? "navy" : "gray"} />
             </div>
-            {p.clientName && <p className="mt-1 text-sm text-[var(--dim)]">{tr("Client:", "Cliente:", "Cliente:")} {p.clientName}</p>}
+            {session.role !== "funcionario" && p.clientName && <p className="mt-1 text-sm text-[var(--dim)]">{tr("Client:", "Cliente:", "Cliente:")} {p.clientName}</p>}
             {p.address && <p className="text-sm text-[var(--dim)]">📍 {p.address}</p>}
             {p.scope && <p className="mt-1 line-clamp-2 text-sm text-[var(--text)]"><span className="font-semibold">{tr("What to do:", "O que fazer:", "Qué hacer:")}</span> {p.scope}</p>}
             <p className="text-xs font-semibold text-[var(--dim)]">{p.geoLat !== null ? `🛡️ ${tr("Geofence on", "Cerca virtual ativa", "Geocerca activa")} • ${mToFt(p.geoRadius)} ft ${tr("radius", "de raio", "de radio")}` : tr("⚠️ No geofence — GPS is not validated on this project", "⚠️ Sem cerca virtual — o GPS não é validado nesta obra", "⚠️ Sin geocerca: el GPS no se valida en esta obra")}</p>
@@ -3565,7 +3539,7 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
           <h2 className="text-lg font-bold leading-snug">{p.name}</h2>
           <Badge text={projectStatusLabel(p.status)} tone={p.status === "andamento" ? "green" : "gray"} />
         </div>
-        {p.clientName && <p className="mt-1 text-sm text-white/70">{tr("Client:", "Cliente:", "Cliente:")} {p.clientName}</p>}
+        {session.role !== "funcionario" && p.clientName && <p className="mt-1 text-sm text-white/70">{tr("Client:", "Cliente:", "Cliente:")} {p.clientName}</p>}
         {p.address && <p className="text-sm text-white/70">📍 {p.address}</p>}
         <p className="mt-2 text-sm text-white/70">{fmtDate(p.startDate)} → {fmtDate(p.endDate)} • {tr("Budget", "Orçamento", "Presupuesto")} {fmtUSD(p.budget)}{session.role === "admin" && (q.data.jobs.length > 0 || p.estimatedValue > 0) ? ` • ${tr("Estimated value", "Valor estimado", "Valor estimado")} ${fmtUSD(q.data.jobs.length > 0 ? q.data.jobs.reduce((s, j) => s + j.estimatedValue, 0) : p.estimatedValue)}` : ""}</p>
         <div className="mt-4">
@@ -3717,7 +3691,7 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
                   <span className="text-[var(--dim)]">{tr("Labor cost", "Custo de mão de obra", "Costo de mano de obra")} <span className="text-[11px]">{tr("(auto — approved timesheets)", "(automático — registros aprovados)", "(automático: registros aprobados)")}</span></span>
                   <span className="font-semibold">{fmtUSD(labor)}</span>
                 </div>
-                <p className="-mt-1 text-[11px] text-[var(--dim)]">{tr("Hourly = approved hours × rate • Daily = approved days × daily rate • Contract = contract amount. Read-only — approve time in Dispatch → Time & hours and this updates.", "Por hora = horas aprovadas × valor • Por dia = dias aprovados × diária • Por contrato = valor do contrato. Somente leitura — aprove o ponto em Distribuição → Ponto e horas e isto é atualizado.", "Por hora = horas aprobadas × tarifa • Por día = días aprobados × tarifa diaria • Por contrato = importe del contrato. Solo lectura: aprueba las horas en Distribución → Horas y esto se actualiza.")}</p>
+                <p className="-mt-1 text-[11px] text-[var(--dim)]">{tr("Hourly = approved hours × rate • Daily = approved days × daily rate • Contract = contract amount. Read-only — approve time in the Time tab and this updates.", "Por hora = horas aprovadas × valor • Por dia = dias aprovados × diária • Por contrato = valor do contrato. Somente leitura — aprove o ponto na aba Ponto e isto é atualizado.", "Por hora = horas aprobadas × tarifa • Por día = días aprobados × tarifa diaria • Por contrato = importe del contrato. Solo lectura: aprueba las horas en la pestaña Horas y esto se actualiza.")}</p>
                 {q.data.jobs.length > 0 && (
                   <div className="rounded-lg bg-[var(--surface2)] px-3 py-2" aria-label={tr("Estimate by job", "Estimativa por trabalho", "Estimación por trabajo")}>
                     <p className="text-[11px] font-bold uppercase tracking-wide text-[var(--dim)]">{tr("Estimate by job", "Estimativa por trabalho", "Estimación por trabajo")}</p>
@@ -3894,7 +3868,7 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
 
       <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
         <h3 className="font-bold">{tr("Field updates", "Atualizações de campo", "Actualizaciones de campo")}</h3>
-        {q.data.progressFeed.length === 0 && <p className="mt-2 text-sm text-[var(--dim)]">{tr("No photos or notes yet. Use Dispatch → Field to send one.", "Nenhuma foto ou observação ainda. Use Distribuição → Campo para enviar uma.", "Todavía no hay fotos ni notas. Usa Distribución → Campo para enviar una.")}</p>}
+        {q.data.progressFeed.length === 0 && <p className="mt-2 text-sm text-[var(--dim)]">{tr("No photos or notes yet. Use the Field tab to send one.", "Nenhuma foto ou observação ainda. Use a aba Campo para enviar uma.", "Todavía no hay fotos ni notas. Usa la pestaña Campo para enviar una.")}</p>}
         <div className="mt-3 space-y-3">
           {q.data.progressFeed.map((f) => (
             <div key={f.id} className="rounded-xl bg-[var(--surface2)] p-3">
@@ -4321,7 +4295,7 @@ function TimeEntries({ cid, session, focusSheetId, onFocusConsumed }: { cid: str
       </div>
 
       {q.isPending && <p className="py-8 text-center text-[var(--dim)]">{tr("Loading time entries…", "Carregando os registros de ponto…", "Cargando los registros de horas…")}</p>}
-      {q.data && sheets.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center"><p className="font-semibold">{tr("No entries found", "Nenhum registro encontrado", "No se encontraron registros")}</p><p className="mt-1 text-sm text-[var(--dim)]">{tr("Check in from Dispatch → Field to create the first one.", "Registre o ponto em Distribuição → Campo para criar o primeiro.", "Registra tu entrada en Distribución → Campo para crear el primero.")}</p></div>}
+      {q.data && sheets.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center"><p className="font-semibold">{tr("No entries found", "Nenhum registro encontrado", "No se encontraron registros")}</p><p className="mt-1 text-sm text-[var(--dim)]">{tr("Check in from the Field tab to create the first one.", "Registre o ponto na aba Campo para criar o primeiro.", "Registra tu entrada en la pestaña Campo para crear el primero.")}</p></div>}
 
       <div className="space-y-3">
         {sheets.map((s) => {
@@ -4478,10 +4452,38 @@ function Payroll({ cid, session }: { cid: string; session: Session }) {
   const [payNotes, setPayNotes] = useState("");
   const [payMsg, setPayMsg] = useState("");
   const [stubId, setStubId] = useState<number | null>(null);
+  const [customAmounts, setCustomAmounts] = useState<Record<number, string>>({});
+  const [showAdvance, setShowAdvance] = useState(false);
+  const [advEmployeeId, setAdvEmployeeId] = useState("");
+  const [advAmount, setAdvAmount] = useState("");
+  const [advDate, setAdvDate] = useState(todayInput());
+  const [advNotes, setAdvNotes] = useState("");
   const stubQ = useQuery({ queryKey: ["pay-stub", cid, stubId], queryFn: () => api.getPayStub({ companyId: cid, payoutId: stubId ?? 0 }), enabled: stubId !== null });
 
+  const advancesQ = useQuery({ queryKey: ["advances", cid], queryFn: () => api.listPayrollAdvances({ companyId: cid, actorId: session.userId }) });
+  const recordAdvance = useMutation({
+    mutationFn: () => api.recordPayrollAdvance({ companyId: cid, actorId: session.userId, employeeId: Number(advEmployeeId), amountCents: Math.round(parseFloat(advAmount.replace(",", ".")) * 100) || 0, advanceDate: advDate, notes: advNotes }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["advances", cid] });
+      qc.invalidateQueries({ queryKey: ["payroll", cid] });
+      setShowAdvance(false); setAdvEmployeeId(""); setAdvAmount(""); setAdvNotes("");
+      setPayMsg(tr("Advance recorded.", "Vale lançado.", "Vale registrado."));
+    },
+    onError: () => setPayMsg(tr("Could not record the advance.", "Não foi possível lançar o vale.", "No se pudo registrar el vale.")),
+  });
+
   const markPaid = useMutation({
-    mutationFn: () => api.markPayrollPaid({ companyId: cid, actorId: session.userId, employeeIds: [...selected], periodStart: week.start, periodEnd: week.end, paidDate, method: method as "Check" | "Direct deposit" | "Cash" | "Other", reference, notes: payNotes }),
+    mutationFn: () => {
+      const paidAmounts: Record<string, number> = {};
+      for (const id of selected) {
+        const custom = customAmounts[id]?.trim();
+        if (custom) {
+          const cents = Math.round(parseFloat(custom.replace(",", ".")) * 100);
+          if (cents >= 0) paidAmounts[String(id)] = cents;
+        }
+      }
+      return api.markPayrollPaid({ companyId: cid, actorId: session.userId, employeeIds: [...selected], periodStart: week.start, periodEnd: week.end, paidDate, method: method as "Check" | "Direct deposit" | "Cash" | "Other", reference, notes: payNotes, paidAmounts });
+    },
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["payroll", cid] });
       qc.invalidateQueries({ queryKey: ["payouts", cid] });
@@ -4579,17 +4581,61 @@ function Payroll({ cid, session }: { cid: string; session: Session }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
         <h2 className="text-xl font-bold">{tr("Payroll", "Folha de pagamento", "Nómina")}</h2>
-        <div className="flex items-center gap-1.5" role="group" aria-label={tr("Payroll week navigation", "Navegação da semana da folha", "Navegación de la semana de nómina")}>
-          <button type="button" aria-label={tr("Previous week", "Semana anterior", "Semana anterior")} onClick={() => { setWeekOffset((o) => o - 1); setSelected(new Set()); }} className={btnGhost}>←</button>
-          <span className="px-1 text-sm font-bold" aria-label={tr("Current payroll period", "Período atual da folha", "Período actual de nómina")}>{weekOffset === 0 ? tr("This week", "Esta semana", "Esta semana") : week.label}<span className="block text-center text-[11px] font-medium text-[var(--dim)]">{week.label}</span></span>
-          <button type="button" aria-label={tr("Next week", "Próxima semana", "Semana siguiente")} disabled={weekOffset >= 0} onClick={() => { setWeekOffset((o) => o + 1); setSelected(new Set()); }} className={`${btnGhost} disabled:opacity-40`}>→</button>
+        <div className="flex items-center gap-2">
+          <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
+          <div className="flex items-center gap-1.5" role="group" aria-label={tr("Payroll week navigation", "Navegação da semana da folha", "Navegación de la semana de nómina")}>
+            <button type="button" aria-label={tr("Previous week", "Semana anterior", "Semana anterior")} onClick={() => { setWeekOffset((o) => o - 1); setSelected(new Set()); }} className={btnGhost}>←</button>
+            <span className="px-1 text-sm font-bold" aria-label={tr("Current payroll period", "Período atual da folha", "Período actual de nómina")}>{weekOffset === 0 ? tr("This week", "Esta semana", "Esta semana") : week.label}<span className="block text-center text-[11px] font-medium text-[var(--dim)]">{week.label}</span></span>
+            <button type="button" aria-label={tr("Next week", "Próxima semana", "Semana siguiente")} disabled={weekOffset >= 0} onClick={() => { setWeekOffset((o) => o + 1); setSelected(new Set()); }} className={`${btnGhost} disabled:opacity-40`}>→</button>
+          </div>
         </div>
+      </div>
+      <div className="hidden print:block">
+        <h2 className="text-xl font-bold">{tr("Payroll", "Folha de pagamento", "Nómina")} — {week.label}</h2>
+        <p className="text-sm text-gray-600">{session.companyName}</p>
       </div>
       <p className="text-sm text-[var(--dim)]">{tr("Weekly period (Mon–Sun), from", "Período semanal (seg–dom), somente de registros de ponto", "Período semanal (lun–dom), solo de registros de horas")} <strong>{tr("approved", "aprovados", "aprobados")}</strong> {tr("time entries only.", ".", ".")} <strong>{tr("Hourly", "Por hora", "Por hora")}</strong> = {tr("hours × rate", "horas × valor", "horas × tarifa")}{ q.data?.otEnabled ? <> {tr("with overtime: hours over", "com hora extra: horas acima de", "con horas extra: horas por encima de")} {q.data.otDailyHours}h/{tr("day", "dia", "día")} {tr("and", "e", "y")} {q.data.otWeeklyHours}h/{tr("week pay", "semana pagam", "semana pagan")} {q.data.otMultiplier}×</> : tr(" (overtime is off — an admin can turn it on in Settings)", " (hora extra desativada — um administrador pode ativá-la em Configurações)", " (horas extra desactivadas: un administrador puede activarlas en Configuración)")} • <strong>{tr("Daily", "Por dia", "Por día")}</strong> = {tr("days on site × daily rate", "dias na obra × diária", "días en la obra × tarifa diaria")} • <strong>{tr("Contract", "Por contrato", "Por contrato")}</strong> = {tr("fixed amount for the period. Select people and mark them paid — paid periods lock and never recalculate.", "valor fixo pelo período. Selecione as pessoas e marque como pago — períodos pagos travam e nunca são recalculados.", "importe fijo por el período. Selecciona a las personas y márcalas como pagadas: los períodos pagados se bloquean y nunca se recalculan.")}</p>
       {q.isPending && <p className="py-8 text-center text-[var(--dim)]">{tr("Calculating payroll…", "Calculando a folha…", "Calculando la nómina…")}</p>}
-      {q.data && rows.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center"><p className="font-semibold">{tr("No approved hours in this period", "Nenhuma hora aprovada neste período", "No hay horas aprobadas en este período")}</p><p className="mt-1 text-sm text-[var(--dim)]">{tr("Approve entries in Dispatch → Time & hours to see payroll here.", "Aprove registros em Distribuição → Ponto e horas para ver a folha aqui.", "Aprueba registros en Distribución → Horas para ver la nómina aquí.")}</p></div>}
+      {q.data && rows.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center"><p className="font-semibold">{tr("No approved hours in this period", "Nenhuma hora aprovada neste período", "No hay horas aprobadas en este período")}</p><p className="mt-1 text-sm text-[var(--dim)]">{tr("Approve entries in the Time tab to see payroll here.", "Aprove registros na aba Ponto para ver a folha aqui.", "Aprueba registros en la pestaña Horas para ver la nómina aquí.")}</p></div>}
+
+      <div className="flex flex-wrap gap-2 print:hidden">
+        <button type="button" className={btnGhost} onClick={() => setShowAdvance((s) => !s)}>{showAdvance ? tr("Close advance form", "Fechar vale", "Cerrar vale") : tr("💰 Record advance (vale)", "💰 Lançar vale", "💰 Registrar vale")}</button>
+      </div>
+      {showAdvance && (
+        <section className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Record advance", "Lançar vale", "Registrar vale")}>
+          <h3 className="font-bold">💰 {tr("Record advance (vale)", "Lançar vale", "Registrar vale")}</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label={tr("Employee", "Funcionário", "Empleado")}>
+              <select aria-label={tr("Employee for advance", "Funcionário do vale", "Empleado del vale")} className={inputCls} value={advEmployeeId} onChange={(e) => setAdvEmployeeId(e.target.value)}>
+                <option value="">{tr("Select…", "Selecione…", "Selecciona…")}</option>
+                {rows.map((r) => <option key={r.employeeId} value={r.employeeId}>{r.employeeName}</option>)}
+              </select>
+            </Field>
+            <Field label={tr("Amount (USD)", "Valor (USD)", "Importe (USD)")}>
+              <input aria-label={tr("Advance amount", "Valor do vale", "Importe del vale")} className={inputCls} inputMode="decimal" value={advAmount} onChange={(e) => setAdvAmount(e.target.value)} placeholder="100.00" />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label={tr("Date", "Data", "Fecha")}><input aria-label={tr("Advance date", "Data do vale", "Fecha del vale")} type="date" className={inputCls} value={advDate} onChange={(e) => setAdvDate(e.target.value)} /></Field>
+            <Field label={tr("Notes (optional)", "Observações (opcional)", "Notas (opcional)")}><input aria-label={tr("Advance notes", "Observações do vale", "Notas del vale")} className={inputCls} value={advNotes} onChange={(e) => setAdvNotes(e.target.value)} /></Field>
+          </div>
+          <button type="button" className={`${btnNavy} w-full`} disabled={recordAdvance.isPending || !advEmployeeId || !advAmount.trim()} onClick={() => recordAdvance.mutate()}>
+            {recordAdvance.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr("Record advance", "Lançar vale", "Registrar vale")}
+          </button>
+          {advancesQ.data && advancesQ.data.advances.filter((a) => !a.deducted).length > 0 && (
+            <div className="mt-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-[var(--dim)]">{tr("Outstanding advances", "Vales em aberto", "Vales pendientes")}</p>
+              <div className="mt-1 space-y-1">
+                {advancesQ.data.advances.filter((a) => !a.deducted).map((a) => (
+                  <p key={a.id} className="text-sm">{a.employeeName} • {fmtUSD(a.amountCents)} • {fmtDate(a.advanceDate)}{a.notes ? ` • ${a.notes}` : ""}</p>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {rows.length > 0 && (
         <label className="flex items-center gap-2 text-sm font-semibold">
@@ -4604,7 +4650,7 @@ function Payroll({ cid, session }: { cid: string; session: Session }) {
               <input type="checkbox" aria-label={tr(`Select ${r.employeeName} to mark as paid`, `Selecionar ${r.employeeName} para marcar como pago`, `Seleccionar a ${r.employeeName} para marcar como pagado`)} checked={selected.has(r.employeeId)} disabled={r.paid} onChange={() => toggleOne(r.employeeId)} className="mt-1 h-4 w-4 shrink-0 disabled:opacity-40" />
               <div className="min-w-0">
                 <p className="truncate font-bold">{r.employeeName}</p>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5">{payBadge(r.payType, r.payRate)}{r.paid && <Badge text={tr("Paid ✓ locked", "Pago ✓ travado", "Pagado ✓ bloqueado")} tone="green" />}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">{payBadge(r.payType, r.payRate)}{r.paid ? <Badge text={tr("Paid ✓ locked", "Pago ✓ travado", "Pagado ✓ bloqueado")} tone="green" /> : <Badge text={tr("Open", "Aberto", "Abierto")} tone="amber" />}</div>
                 <p className="mt-1 text-xs text-[var(--dim)]">
                   {r.payType === "hora"
                     ? <>{r.trade ? `${r.trade} • ` : ""}{tr("Regular", "Regulares", "Regulares")} {r.regularHours.toFixed(1)}h{r.otHours > 0 ? <> • <span className="font-bold text-amber-700 dark:text-amber-400">OT {r.otHours.toFixed(1)}h</span></> : ""} • {tr("Total", "Total", "Total")} {r.hours.toFixed(1)}h</>
@@ -4616,6 +4662,12 @@ function Payroll({ cid, session }: { cid: string; session: Session }) {
             </div>
             <div className="shrink-0 text-right">
               <p className="text-lg font-black">{fmtUSD(r.amount)}</p>
+              {r.paid && r.paidAmount !== null && r.paidAmount !== r.amount && (
+                <p className="text-xs font-semibold text-amber-700">{tr("Paid:", "Pago:", "Pagado:")} {fmtUSD(r.paidAmount)} • {tr("Balance:", "Saldo:", "Saldo:")} <span className={r.balance! > 0 ? "text-red-600" : "text-green-600"}>{fmtUSD(r.balance!)}</span></p>
+              )}
+              {r.outstandingAdvances > 0 && (
+                <p className="text-xs font-semibold text-purple-700">💰 {tr("Advance:", "Vale:", "Vale:")} {fmtUSD(r.outstandingAdvances)}</p>
+              )}
               {r.paid && r.payoutId !== null && <button type="button" aria-label={tr(`View pay stub for ${r.employeeName}`, `Ver o comprovante de ${r.employeeName}`, `Ver el comprobante de ${r.employeeName}`)} onClick={() => setStubId(r.payoutId)} className="text-xs font-bold text-[#f97316] active:opacity-70">{tr("Pay stub", "Comprovante", "Comprobante")}</button>}
             </div>
           </div>
@@ -4631,6 +4683,15 @@ function Payroll({ cid, session }: { cid: string; session: Session }) {
       {selected.size > 0 && (
         <section className="space-y-3 rounded-2xl border-2 border-green-600 bg-[var(--surface)] p-4" aria-label={tr("Mark as paid", "Marcar como pago", "Marcar como pagado")}>
           <h3 className="font-bold">💵 {tr("Mark as paid", "Marcar como pago", "Marcar como pagado")} — {selected.size} {selected.size === 1 ? tr("person", "pessoa", "persona") : tr("people", "pessoas", "personas")} • {week.label}</h3>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Amounts to pay (leave blank for the full amount)", "Valores a pagar (deixe em branco para o valor integral)", "Importes a pagar (deja en blanco para el importe total)")}</p>
+            {rows.filter((r) => selected.has(r.employeeId)).map((r) => (
+              <div key={r.employeeId} className="flex items-center justify-between gap-2 rounded-lg bg-[var(--surface2)] px-3 py-2">
+                <span className="text-sm font-semibold">{r.employeeName} <span className="font-normal text-[var(--dim)]">({fmtUSD(r.amount)})</span></span>
+                <input aria-label={tr(`Amount to pay ${r.employeeName}`, `Valor a pagar para ${r.employeeName}`, `Importe a pagar a ${r.employeeName}`)} className={inputCls} inputMode="decimal" value={customAmounts[r.employeeId] ?? ""} onChange={(e) => setCustomAmounts((prev) => ({ ...prev, [r.employeeId]: e.target.value }))} placeholder={fmtUSD(r.amount)} style={{ width: 110 }} />
+              </div>
+            ))}
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label={tr("Paid date", "Data do pagamento", "Fecha de pago")}><input aria-label={tr("Paid date", "Data do pagamento", "Fecha de pago")} type="date" className={inputCls} value={paidDate} onChange={(e) => setPaidDate(e.target.value)} /></Field>
             <Field label={tr("Method", "Método", "Método")}>
@@ -4713,16 +4774,6 @@ function Expenses({ cid, session }: { cid: string; session: Session }) {
           <Field label={tr("Quantity", "Quantidade", "Cantidad")}><input aria-label={tr("Quantity", "Quantidade", "Cantidad")} className={inputCls} inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
           <Field label={tr("Unit cost (USD)", "Custo unitário (USD)", "Costo unitario (USD)")}><input aria-label={tr("Unit cost in US dollars", "Custo unitário em dólares", "Costo unitario en dólares")} className={inputCls} inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="38.90" /></Field>
         </div>
-        {(() => {
-          const qn = parseFloat(qty.replace(",", ".")) || 0;
-          const uc = parseMoney(cost);
-          const lineTotal = Math.round(qn * uc);
-          return lineTotal > 0 ? (
-            <p className="rounded-xl bg-[var(--surface2)] px-3 py-2 text-sm font-bold" aria-label={tr(`Expense total ${fmtUSD(lineTotal)}`, `Total da despesa ${fmtUSD(lineTotal)}`, `Total del gasto ${fmtUSD(lineTotal)}`)}>
-              {tr("Total", "Total", "Total")}: {qn} × {fmtUSD(uc)} = {fmtUSD(lineTotal)}
-            </p>
-          ) : null;
-        })()}
         <div className="grid grid-cols-2 gap-3">
           <Field label={tr("Supplier", "Fornecedor", "Proveedor")}><input aria-label={tr("Supplier", "Fornecedor", "Proveedor")} autoComplete="organization" className={inputCls} value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder={tr("Store / supplier", "Loja / fornecedor", "Tienda / proveedor")} /></Field>
           <Field label={tr("Date", "Data", "Fecha")}><input aria-label={tr("Expense date", "Data da despesa", "Fecha del gasto")} type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
@@ -4738,7 +4789,6 @@ function Expenses({ cid, session }: { cid: string; session: Session }) {
             <div className="min-w-0">
               <p className="truncate font-semibold">{e.item}</p>
               <p className="text-xs text-[var(--dim)]">{e.projectName} • {e.quantity} × {fmtUSD(e.unitCost)}{e.supplier ? ` • ${e.supplier}` : ""} • {fmtDate(e.expenseDate)}</p>
-              <p className="mt-1 text-sm font-bold" aria-label={tr(`Total for ${e.item}: ${fmtUSD(e.total)}`, `Total de ${e.item}: ${fmtUSD(e.total)}`, `Total de ${e.item}: ${fmtUSD(e.total)}`)}>{tr("Total", "Total", "Total")}: {e.quantity} × {fmtUSD(e.unitCost)} = {fmtUSD(e.total)}</p>
               {e.billedInvoiceId !== null && (
                 <p className="mt-1 flex flex-wrap items-center gap-2">
                   <Badge text={tr(`Billed • Invoice #${e.billedInvoiceNumber || e.billedInvoiceId}`, `Faturado • Fatura nº ${e.billedInvoiceNumber || e.billedInvoiceId}`, `Facturado • Factura n.º ${e.billedInvoiceNumber || e.billedInvoiceId}`)} tone="navy" />
@@ -4754,13 +4804,78 @@ function Expenses({ cid, session }: { cid: string; session: Session }) {
                 </p>
               )}
             </div>
-            <div className="shrink-0 text-right">
-              <p className="text-[10px] font-black uppercase tracking-wide text-[var(--dim)]">{tr("Total", "Total", "Total")}</p>
-              <p className="font-bold">{fmtUSD(e.total)}</p>
-            </div>
+            <p className="shrink-0 font-bold">{fmtUSD(e.total)}</p>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Costs ---------------- */
+function CostsView({ cid, session }: { cid: string; session: Session }) {
+  const q = useQuery({ queryKey: ["costs", cid], queryFn: () => api.getCosts({ companyId: cid, actorId: session.id }) });
+  const [mode, setMode] = useState<"project" | "general">("general");
+
+  const CostCard = ({ label, cents, color }: { label: string; cents: number; color: string }) => (
+    <div className="rounded-xl bg-[var(--surface2)] p-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{label}</p>
+      <p className={`text-xl font-black ${color}`}>{fmtUSD(cents)}</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between print:hidden">
+        <h2 className="text-lg font-black">📊 {tr("Costs", "Custos", "Costos")}</h2>
+        <div className="flex items-center gap-2">
+          <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
+          <div className="flex gap-1 rounded-xl bg-[var(--surface2)] p-1">
+            <button type="button" className={`rounded-lg px-3 py-1.5 text-sm font-bold ${mode === "general" ? "bg-[#0f2a44] text-white" : ""}`}
+              onClick={() => setMode("general")}>{tr("General", "Geral", "General")}</button>
+            <button type="button" className={`rounded-lg px-3 py-1.5 text-sm font-bold ${mode === "project" ? "bg-[#0f2a44] text-white" : ""}`}
+              onClick={() => setMode("project")}>{tr("Per project", "Por obra", "Por obra")}</button>
+          </div>
+        </div>
+      </div>
+      <div className="hidden print:block">
+        <h2 className="text-lg font-black">📊 {tr("Costs", "Custos", "Costos")} — {mode === "general" ? tr("General", "Geral", "General") : tr("Per project", "Por obra", "Por obra")}</h2>
+        <p className="text-sm text-gray-600">{session.companyName} • {new Date().toLocaleDateString()}</p>
+      </div>
+
+      {q.isPending ? <p className="py-10 text-center text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p> : q.isError ? (
+        <p className="py-10 text-center text-sm font-semibold text-red-600">{tr("Could not load costs.", "Não foi possível carregar os custos.", "No se pudieron cargar los costos.")}</p>
+      ) : mode === "general" ? (
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Total costs", "Custos totais", "Costos totales")}</p>
+            <p className="text-3xl font-black">{fmtUSD(q.data.general.totalCents)}</p>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <CostCard label={tr("Labor", "Mão de obra", "Mano de obra")} cents={q.data.general.laborCents} color="text-blue-700" />
+            <CostCard label={tr("Materials", "Materiais", "Materiales")} cents={q.data.general.materialsCents} color="text-amber-700" />
+            <CostCard label={tr("Fleet", "Frota", "Flota")} cents={q.data.general.fleetCents} color="text-green-700" />
+          </div>
+          <p className="text-xs text-[var(--dim)]">{tr("Labor from approved timesheets. Materials from expenses. Fleet from fuel, maintenance and tickets.", "Mão de obra dos timesheets aprovados. Materiais das despesas. Frota de combustível, manutenção e multas.", "Mano de obra de las horas aprobadas. Materiales de los gastos. Flota de combustible, mantenimiento y multas.")}</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {q.data.perProject.length === 0 && <p className="py-10 text-center text-sm text-[var(--dim)]">{tr("No projects yet.", "Nenhuma obra ainda.", "Aún no hay obras.")}</p>}
+          {q.data.perProject.map((p) => (
+            <div key={p.projectId} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+              <div className="flex items-center justify-between">
+                <p className="font-bold">{p.projectName}</p>
+                <p className="text-lg font-black">{fmtUSD(p.totalCents)}</p>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
+                <div><p className="text-xs text-[var(--dim)]">{tr("Labor", "Mão de obra", "Mano de obra")}</p><p className="font-semibold text-blue-700">{fmtUSD(p.laborCents)}</p></div>
+                <div><p className="text-xs text-[var(--dim)]">{tr("Materials", "Materiais", "Materiales")}</p><p className="font-semibold text-amber-700">{fmtUSD(p.materialsCents)}</p></div>
+                <div><p className="text-xs text-[var(--dim)]">{tr("Fleet", "Frota", "Flota")}</p><p className="font-semibold text-green-700">{fmtUSD(p.fleetCents)}</p></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -6221,213 +6336,6 @@ function tenantStatusLabel(status: string): string {
   return TENANT_STATUS_LABEL[status] ?? status;
 }
 
-/* Subscriptions (platform owner): weekly due = base fee per user × ALL
-   of the company's users — the same user count shown for the company
-   everywhere (team + client-portal users alike), so a company with 6
-   users pays 6× the per-user fee. Tap a company to open its own
-   subscription screen: its users, fee, weekly charge, balance, payment
-   form, and full history. Payments accept any amount — underpaying
-   leaves a debtor balance (restante a pagar), overpaying leaves a
-   credit — and the signed balance carries into the next charge
-   (due now = weekly due + balance). */
-function SubscriptionPanel({ ownerEmail }: { ownerEmail: string }) {
-  const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["subscriptions", ownerEmail], queryFn: () => api.getSubscriptionOverview({ ownerEmail }) });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [editingFee, setEditingFee] = useState(false);
-  const [feeValue, setFeeValue] = useState("");
-  const [showPayForm, setShowPayForm] = useState(false);
-  const [payAmount, setPayAmount] = useState("");
-  const [payDate, setPayDate] = useState(todayInput());
-  const [payNotes, setPayNotes] = useState("");
-  const [msg, setMsg] = useState("");
-  const detailQ = useQuery({
-    queryKey: ["subscription-detail", ownerEmail, selectedId],
-    queryFn: () => api.getSubscriptionDetail({ ownerEmail, companyId: selectedId! }),
-    enabled: !!selectedId,
-  });
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["subscriptions", ownerEmail] });
-    qc.invalidateQueries({ queryKey: ["subscription-detail", ownerEmail] });
-  };
-  const setFee = useMutation({
-    mutationFn: (args: { companyId: string; weeklyFeeCents: number }) => api.setWeeklyFee({ ownerEmail, ...args }),
-    onSuccess: () => { invalidate(); setEditingFee(false); setMsg(tr("Weekly fee per user updated.", "Valor semanal por usuário atualizado.", "Valor semanal por usuario actualizado.")); },
-    onError: () => setMsg(tr("Could not update the fee.", "Não foi possível atualizar o valor.", "No se pudo actualizar el valor.")),
-  });
-  const recordPay = useMutation({
-    mutationFn: (args: { companyId: string; amountCents: number; paidDate: string; notes: string }) => api.recordSubscriptionPayment({ ownerEmail, ...args }),
-    onSuccess: (r) => {
-      invalidate();
-      setShowPayForm(false); setPayAmount(""); setPayNotes("");
-      setMsg(r.balanceAfterCents > 0
-        ? tr(`Payment recorded. Remaining balance to pay: ${fmtUSD(r.balanceAfterCents)}.`, `Pagamento lançado. Saldo restante a pagar: ${fmtUSD(r.balanceAfterCents)}.`, `Pago registrado. Saldo restante por pagar: ${fmtUSD(r.balanceAfterCents)}.`)
-        : r.balanceAfterCents < 0
-          ? tr(`Payment recorded. Credit in the tenant's favor: ${fmtUSD(-r.balanceAfterCents)}.`, `Pagamento lançado. Crédito a favor da empresa: ${fmtUSD(-r.balanceAfterCents)}.`, `Pago registrado. Crédito a favor de la empresa: ${fmtUSD(-r.balanceAfterCents)}.`)
-          : tr("Payment recorded. Subscription is fully paid. ✅", "Pagamento lançado. Assinatura quitada. ✅", "Pago registrado. Suscripción saldada. ✅"));
-    },
-    onError: () => setMsg(tr("Could not record the payment.", "Não foi possível lançar o pagamento.", "No se pudo registrar el pago.")),
-  });
-  const balanceChip = (balanceCents: number) => {
-    if (balanceCents > 0) return <span className="inline-block rounded-full bg-red-100 px-2.5 py-1 text-xs font-black text-red-700">{tr(`Balance due: ${fmtUSD(balanceCents)} (still to pay)`, `Saldo devedor: ${fmtUSD(balanceCents)} (restante a pagar)`, `Saldo deudor: ${fmtUSD(balanceCents)} (restante por pagar)`)}</span>;
-    if (balanceCents < 0) return <span className="inline-block rounded-full bg-green-100 px-2.5 py-1 text-xs font-black text-green-800">{tr(`Credit: ${fmtUSD(-balanceCents)}`, `Crédito: ${fmtUSD(-balanceCents)}`, `Crédito: ${fmtUSD(-balanceCents)}`)}</span>;
-    return <span className="inline-block rounded-full bg-gray-100 px-2.5 py-1 text-xs font-black text-gray-600">{tr("Paid up ✅", "Em dia ✅", "Al día ✅")}</span>;
-  };
-  const openDetail = (companyId: string) => {
-    setSelectedId(companyId); setEditingFee(false); setShowPayForm(false); setMsg("");
-  };
-  const d = detailQ.data;
-  return (
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Subscriptions", "Assinaturas", "Suscripciones")}>
-      <h2 className="font-bold">💳 {tr("Subscriptions", "Assinaturas", "Suscripciones")}</h2>
-      <p className="mt-1 text-sm text-[var(--dim)]">{tr("Weekly charge = base fee per user × all of the company's users (team + client-portal users). Payments can be any amount: paying less leaves a balance to pay, paying more leaves a credit — the balance carries into the next charge. Tap a company to open its subscription.", "Cobrança semanal = valor base por usuário × todos os usuários da empresa (equipe + portal do cliente). O pagamento pode ser de qualquer valor: pagar menos deixa saldo a pagar, pagar mais deixa crédito — o saldo entra na próxima cobrança. Toque numa empresa para abrir a assinatura dela.", "Cargo semanal = valor base por usuario × todos los usuarios de la empresa (equipo + portal del cliente). El pago puede ser de cualquier importe: pagar menos deja saldo por pagar, pagar más deja crédito; el saldo pasa al siguiente cargo. Toca una empresa para abrir su suscripción.")}</p>
-      {msg && <p className="mt-2 rounded-xl bg-[var(--surface2)] px-3 py-2 text-sm font-semibold" role="status">{msg}</p>}
-      {!selectedId && (
-        <>
-          {q.isPending && <p className="mt-2 text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
-          {q.isError && <p className="mt-2 text-sm text-red-600">{tr("Could not load subscriptions.", "Não foi possível carregar as assinaturas.", "No se pudieron cargar las suscripciones.")} <button type="button" className="underline" onClick={() => q.refetch()}>{tr("Retry", "Tentar novamente", "Reintentar")}</button></p>}
-          {q.data && (
-            <div className="mt-3 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-[var(--surface2)] p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Total weekly (all tenants)", "Total semanal (todas as empresas)", "Total semanal (todas las empresas)")}</p>
-                  <p className="text-2xl font-black">{fmtUSD(q.data.totalWeeklyCents)}</p>
-                </div>
-                <div className="rounded-xl bg-[var(--surface2)] p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Due now (with balances)", "Devido agora (com saldos)", "Debido ahora (con saldos)")}</p>
-                  <p className="text-2xl font-black">{fmtUSD(q.data.totalDueNowCents)}</p>
-                </div>
-              </div>
-              {q.data.builders.map((b) => (
-                <button key={b.companyId} type="button" aria-label={tr(`Open the subscription of ${b.companyName}`, `Abrir a assinatura de ${b.companyName}`, `Abrir la suscripción de ${b.companyName}`)}
-                  className="block w-full rounded-xl border border-[var(--border)] p-3 text-left active:opacity-80" onClick={() => openDetail(b.companyId)}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-bold">{b.companyName} <span className="text-xs font-normal text-[var(--dim)]">({b.code})</span></p>
-                      <p className="text-sm text-[var(--dim)]">👥 {b.userCount} {tr("users", "usuários", "usuarios")} • {fmtUSD(b.weeklyFeeCents)}/{tr("user/week", "usuário/semana", "usuario/semana")}</p>
-                    </div>
-                    <span className="shrink-0 text-lg font-black text-[var(--dim)]" aria-hidden="true">›</span>
-                  </div>
-                  <p className="mt-1.5 text-sm">{tr("Weekly due:", "Cobrança semanal:", "Cargo semanal:")} <strong>{fmtUSD(b.weeklyDueCents)}</strong> <span className="text-[var(--dim)]">({fmtUSD(b.weeklyFeeCents)} × {b.billableUsers} {tr("users", "usuários", "usuarios")})</span></p>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm">
-                    {balanceChip(b.balanceCents)}
-                    <span className="text-[var(--dim)]">{tr("Due now:", "Devido agora:", "Debido ahora:")} <strong className="text-[var(--text)]">{fmtUSD(b.dueNowCents)}</strong></span>
-                    <span className="text-[var(--dim)]">{tr("Paid total:", "Total pago:", "Total pagado:")} <span className="font-semibold text-green-700">{fmtUSD(b.totalPaidCents)}</span></span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-      {selectedId && (
-        <div className="mt-3">
-          <button type="button" aria-label={tr("Back to all subscriptions", "Voltar para todas as assinaturas", "Volver a todas las suscripciones")} className={btnGhost} onClick={() => { setSelectedId(null); setMsg(""); }}>← {tr("All companies", "Todas as empresas", "Todas las empresas")}</button>
-          {detailQ.isPending && <p className="mt-3 text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
-          {detailQ.isError && <p className="mt-3 text-sm text-red-600">{tr("Could not load this subscription.", "Não foi possível carregar esta assinatura.", "No se pudo cargar esta suscripción.")} <button type="button" className="underline" onClick={() => detailQ.refetch()}>{tr("Retry", "Tentar novamente", "Reintentar")}</button></p>}
-          {d && (
-            <div className="mt-3 space-y-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-lg font-black leading-tight">{d.companyName} <span className="text-xs font-normal text-[var(--dim)]">({d.code})</span></p>
-                  <p className="text-sm text-[var(--dim)]">{tenantStatusLabel(d.status)} • {tr("Plan", "Plano", "Plan")}: {d.plan}</p>
-                </div>
-                {balanceChip(d.balanceCents)}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-[var(--surface2)] p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Weekly due", "Cobrança semanal", "Cargo semanal")}</p>
-                  <p className="text-2xl font-black">{fmtUSD(d.weeklyDueCents)}</p>
-                  <p className="text-xs text-[var(--dim)]">{fmtUSD(d.weeklyFeeCents)} × {d.billableUsers} {tr("users", "usuários", "usuarios")}</p>
-                </div>
-                <div className="rounded-xl bg-[var(--surface2)] p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Due now (with balance)", "Devido agora (com saldo)", "Debido ahora (con saldo)")}</p>
-                  <p className="text-2xl font-black">{fmtUSD(d.dueNowCents)}</p>
-                  <p className="text-xs text-[var(--dim)]">{tr("Paid total:", "Total pago:", "Total pagado:")} <span className="font-semibold text-green-700">{fmtUSD(d.totalPaidCents)}</span></p>
-                </div>
-              </div>
-              <div className="rounded-xl border border-[var(--border)] p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="font-bold">{tr("Fee per user", "Valor por usuário", "Valor por usuario")}</p>
-                  {editingFee ? (
-                    <div className="flex items-center gap-1">
-                      <input aria-label={tr(`Weekly fee per user in dollars for ${d.companyName}`, `Valor semanal por usuário em dólares para ${d.companyName}`, `Valor semanal por usuario en dólares para ${d.companyName}`)} className={inputCls} inputMode="decimal" value={feeValue} onChange={(e) => setFeeValue(e.target.value)} placeholder="0.00" style={{ width: 90 }} />
-                      <button type="button" aria-label={tr(`Save weekly fee for ${d.companyName}`, `Salvar o valor semanal de ${d.companyName}`, `Guardar el valor semanal de ${d.companyName}`)} className={btnNavy} disabled={setFee.isPending} onClick={() => setFee.mutate({ companyId: d.companyId, weeklyFeeCents: parseMoney(feeValue) })}>{tr("Save", "Salvar", "Guardar")}</button>
-                      <button type="button" aria-label={tr("Cancel editing fee", "Cancelar a edição do valor", "Cancelar la edición del valor")} className={btnGhost} onClick={() => setEditingFee(false)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <p className="font-bold">{fmtUSD(d.weeklyFeeCents)}<span className="text-xs font-normal text-[var(--dim)]">/{tr("user/week", "usuário/semana", "usuario/semana")}</span></p>
-                      <button type="button" aria-label={tr(`Edit weekly fee per user for ${d.companyName}`, `Editar o valor semanal por usuário de ${d.companyName}`, `Editar el valor semanal por usuario de ${d.companyName}`)} className="text-xs font-bold text-[#f97316]" onClick={() => { setEditingFee(true); setFeeValue((d.weeklyFeeCents / 100).toFixed(2)); }}>{tr("Edit fee", "Editar valor", "Editar valor")}</button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="rounded-xl border border-[var(--border)] p-3">
-                <p className="font-bold">👥 {tr("Users counted in the charge", "Usuários contados na cobrança", "Usuarios contados en el cargo")} ({d.userCount})</p>
-                <p className="mt-0.5 text-xs text-[var(--dim)]">{d.usersByRole.admin} {roleLabel("admin")} • {d.usersByRole.gerente} {roleLabel("gerente")} • {d.usersByRole.funcionario} {roleLabel("funcionario")} • {d.usersByRole.cliente} {roleLabel("cliente")}</p>
-                <ul className="mt-2 space-y-1">
-                  {d.users.map((u) => (
-                    <li key={u.id} className="flex items-center justify-between gap-2 text-sm">
-                      <span className="min-w-0 truncate">{u.name}</span>
-                      <span className="shrink-0 text-xs text-[var(--dim)]">{roleLabel(u.role)}{u.status !== "ativo" ? ` • ${tr("inactive", "inativo", "inactivo")}` : ""}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <button type="button" aria-label={showPayForm ? tr(`Close payment for ${d.companyName}`, `Fechar o pagamento de ${d.companyName}`, `Cerrar el pago de ${d.companyName}`) : tr(`Record a payment for ${d.companyName}`, `Lançar um pagamento de ${d.companyName}`, `Registrar un pago de ${d.companyName}`)} className={`${btnNavy} w-full`}
-                onClick={() => { const opening = !showPayForm; setShowPayForm(opening); if (opening) { setPayAmount(d.dueNowCents > 0 ? (d.dueNowCents / 100).toFixed(2) : ""); setPayDate(todayInput()); setPayNotes(""); } }}>
-                {showPayForm ? tr("Close", "Fechar", "Cerrar") : tr("+ Record payment", "+ Lançar pagamento", "+ Registrar pago")}
-              </button>
-              {showPayForm && (
-                <div className="rounded-xl bg-[var(--surface2)] p-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <Field label={tr("Amount (USD) — any amount", "Valor (USD) — qualquer valor", "Importe (USD): cualquier importe")}>
-                      <input aria-label={tr(`Payment amount for ${d.companyName}`, `Valor do pagamento de ${d.companyName}`, `Importe del pago de ${d.companyName}`)} className={inputCls} inputMode="decimal" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="0.00" required />
-                    </Field>
-                    <Field label={tr("Date", "Data", "Fecha")}>
-                      <input aria-label={tr(`Payment date for ${d.companyName}`, `Data do pagamento de ${d.companyName}`, `Fecha del pago de ${d.companyName}`)} type="date" className={inputCls} value={payDate} onChange={(e) => setPayDate(e.target.value)} required />
-                    </Field>
-                  </div>
-                  <Field label={tr("Notes (optional)", "Observações (opcional)", "Notas (opcional)")}>
-                    <input aria-label={tr(`Payment notes for ${d.companyName}`, `Observações do pagamento de ${d.companyName}`, `Notas del pago de ${d.companyName}`)} className={inputCls} value={payNotes} onChange={(e) => setPayNotes(e.target.value)} />
-                  </Field>
-                  {parseMoney(payAmount) > 0 && (
-                    <p className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs font-bold ${d.dueNowCents - parseMoney(payAmount) > 0 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-800"}`} role="status">
-                      {d.dueNowCents - parseMoney(payAmount) > 0
-                        ? tr(`After this payment: ${fmtUSD(d.dueNowCents - parseMoney(payAmount))} still to pay (debtor balance).`, `Após este pagamento: ${fmtUSD(d.dueNowCents - parseMoney(payAmount))} restantes a pagar (saldo devedor).`, `Tras este pago: ${fmtUSD(d.dueNowCents - parseMoney(payAmount))} restantes por pagar (saldo deudor).`)
-                        : d.dueNowCents - parseMoney(payAmount) < 0
-                          ? tr(`After this payment: ${fmtUSD(parseMoney(payAmount) - d.dueNowCents)} credit in the tenant's favor for the next charges.`, `Após este pagamento: ${fmtUSD(parseMoney(payAmount) - d.dueNowCents)} de crédito a favor da empresa para as próximas cobranças.`, `Tras este pago: ${fmtUSD(parseMoney(payAmount) - d.dueNowCents)} de crédito a favor de la empresa para los próximos cargos.`)
-                          : tr("After this payment: fully paid, no balance. ✅", "Após este pagamento: quitado, sem saldo. ✅", "Tras este pago: saldado, sin saldo. ✅")}
-                    </p>
-                  )}
-                  <button type="button" aria-label={tr(`Save the payment for ${d.companyName}`, `Salvar o pagamento de ${d.companyName}`, `Guardar el pago de ${d.companyName}`)} className={`${btnNavy} mt-2 w-full`} disabled={recordPay.isPending || parseMoney(payAmount) <= 0 || !payDate}
-                    onClick={() => recordPay.mutate({ companyId: d.companyId, amountCents: parseMoney(payAmount), paidDate: payDate, notes: payNotes })}>
-                    {recordPay.isPending ? tr("Recording…", "Lançando…", "Registrando…") : tr("Record payment", "Lançar pagamento", "Registrar pago")}
-                  </button>
-                </div>
-              )}
-              <div className="rounded-xl border border-[var(--border)] p-3">
-                <p className="text-xs font-bold uppercase tracking-wide text-[var(--dim)]">{tr("Payment history", "Histórico de pagamentos", "Historial de pagos")}</p>
-                {d.payments.length === 0 && <p className="mt-1 text-sm text-[var(--dim)]">{tr("No payments recorded yet.", "Nenhum pagamento lançado ainda.", "Todavía no hay pagos registrados.")}</p>}
-                <div className="mt-1.5 space-y-1.5">
-                  {d.payments.map((p) => (
-                    <p key={p.id} className="text-sm">
-                      {fmtDate(p.paidDate)} • <span className="font-semibold text-green-700">{fmtUSD(p.amountCents)}</span>
-                      <span className="text-[var(--dim)]"> • {tr("due was", "devido era", "lo debido era")} {fmtUSD(p.dueCents)} → {p.balanceAfterCents > 0 ? `${tr("balance", "saldo", "saldo")} ${fmtUSD(p.balanceAfterCents)} ${tr("to pay", "a pagar", "por pagar")}` : p.balanceAfterCents < 0 ? `${tr("credit", "crédito", "crédito")} ${fmtUSD(-p.balanceAfterCents)}` : tr("paid off", "quitado", "saldado")}</span>
-                      {p.notes ? <span className="text-[var(--dim)]"> • {p.notes}</span> : null}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; ownerName: string; onSignOut: () => void }) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["tenants", ownerEmail], queryFn: () => api.listTenants({ ownerEmail }) });
@@ -6465,11 +6373,12 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
   const exportMut = useMutation({
     mutationFn: (companyId: string) => api.exportTenant({ ownerEmail, companyId }),
   });
-  const doExport = async (t: TenantRow) => {
+  const doExport = async (t: TenantRow, format: "json" | "sql") => {
     try {
       const r = await exportMut.mutateAsync(t.id);
       const base = `smartbuilder-tenant-${t.code.toLowerCase()}`;
-      downloadTextFile(`${base}.json`, r.json, "application/json");
+      if (format === "json") downloadTextFile(`${base}.json`, r.json, "application/json");
+      else downloadTextFile(`${base}.sql`, r.sql, "application/sql");
       setExportedIds((prev) => new Set(prev).add(t.id));
       setMsg(tr(`Export downloaded for ${t.name} (${r.totalRows} rows). Keep it safe — deleting this tenant will require this step.`, `Exportação baixada de ${t.name} (${r.totalRows} linhas). Guarde com segurança — excluir esta empresa exigirá esta etapa.`, `Exportación descargada de ${t.name} (${r.totalRows} filas). Guárdala con seguridad: eliminar esta empresa requerirá este paso.`));
     } catch {
@@ -6526,7 +6435,7 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
             {tr("The recommended production setup is", "A configuração de produção recomendada é", "La configuración de producción recomendada es")} <strong className="text-[var(--text)]">{tr("database-per-tenant MySQL", "MySQL com um banco por empresa cliente", "MySQL con una base de datos por empresa cliente")}</strong>: {tr("one MySQL database per customer company", "um banco MySQL por empresa cliente", "una base de datos MySQL por empresa cliente")}
             (<span className="font-mono text-xs">smartbuilder_tenant_&lt;id&gt;</span>), {tr("plus one small platform database with the tenant registry and owner logins.", "mais um pequeno banco da plataforma com o cadastro das empresas e os logins dos proprietários.", "más una pequeña base de datos de la plataforma con el registro de empresas y los inicios de sesión de los propietarios.")}
             {tr("No customer ever shares tables with another customer. The pilot already keys every row by tenant, and the per-tenant export below", "Nenhum cliente compartilha tabelas com outro cliente. O piloto já vincula cada linha à sua empresa, e a exportação por empresa abaixo", "Ningún cliente comparte tablas con otro cliente. El piloto ya vincula cada fila a su empresa, y la exportación por empresa de abajo")}
-            {tr("(JSON export) makes migrating a tenant into its own database mechanical: create the database, run the production", "(exportação JSON) torna mecânica a migração de uma empresa para seu próprio banco: crie o banco, execute o", "(exportación JSON) hace mecánica la migración de una empresa a su propia base de datos: crea la base de datos, ejecuta el")}
+            {tr("(JSON or MySQL SQL dump) makes migrating a tenant into its own database mechanical: create the database, run the production", "(JSON ou dump SQL do MySQL) torna mecânica a migração de uma empresa para seu próprio banco: crie o banco, execute o", "(JSON o volcado SQL de MySQL) hace mecánica la migración de una empresa a su propia base de datos: crea la base de datos, ejecuta el")}
             {tr("schema file, import the tenant's dump, register the tenant.", "arquivo de esquema de produção, importe o dump da empresa, cadastre a empresa.", "archivo de esquema de producción, importa el volcado de la empresa, registra la empresa.")}
           </p>
         </section>
@@ -6638,22 +6547,13 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
           )}
         </section>
 
+        {/* Subscriptions */}
         <SubscriptionPanel ownerEmail={ownerEmail} />
 
-        {/* Database: production schema + per-tenant exports */}
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Production database", "Banco de dados de produção", "Base de datos de producción")}>
-          <h2 className="font-bold">{tr("Production database — MySQL, one database per tenant", "Banco de dados de produção — MySQL, um banco por empresa", "Base de datos de producción: MySQL, una base por empresa")}</h2>
-          <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
-            {tr("The production schema file creates the platform database plus the per-tenant database layout. To move a tenant to production:", "O arquivo de esquema de produção cria o banco da plataforma e o layout de um banco por empresa. Para mover uma empresa para produção:", "El archivo de esquema de producción crea la base de datos de la plataforma y el diseño de una base por empresa. Para mover una empresa a producción:")}
-            {tr("create", "crie", "crea")} <span className="font-mono text-xs">smartbuilder_tenant_&lt;id&gt;</span>{tr(", run this schema, then import the tenant's JSON export below.", ", execute este esquema e depois importe a exportação JSON da empresa abaixo.", ", ejecuta este esquema y luego importa la exportación JSON de la empresa de abajo.")}
-          </p>
-          <button className={`${btnNavy} mt-3 w-full sm:w-auto`} aria-label={tr("Download the production MySQL schema file", "Baixar o arquivo de esquema MySQL de produção", "Descargar el archivo de esquema MySQL de producción")}
-            onClick={() => downloadTextFile("smartbuilder-mysql-schema.sql", mysqlSchemaText, "application/sql")}>
-            {tr("⬇ Download MySQL schema (smartbuilder-mysql-schema.sql)", "⬇ Baixar o esquema MySQL (smartbuilder-mysql-schema.sql)", "⬇ Descargar el esquema MySQL (smartbuilder-mysql-schema.sql)")}
-          </button>
-
-          <h3 className="mt-5 text-sm font-bold uppercase tracking-wide text-[var(--dim)]">{tr("Export tenant database", "Exportar o banco da empresa", "Exportar la base de datos de la empresa")}</h3>
-          <p className="mt-1 text-xs text-[var(--dim)]">{tr("Full dataset per tenant as JSON for inspection/backup. Downloading an export also unlocks that tenant's Delete button.", "Conjunto completo por empresa em JSON para inspeção/backup. Baixar uma exportação também libera o botão Excluir da empresa.", "Conjunto completo por empresa en JSON para inspección/respaldo. Descargar una exportación también desbloquea el botón Eliminar de esa empresa.")}</p>
+        {/* Database: per-tenant exports */}
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Tenant exports", "Exportações das empresas", "Exportaciones de las empresas")}>
+          <h2 className="font-bold">{tr("Export tenant database", "Exportar o banco da empresa", "Exportar la base de datos de la empresa")}</h2>
+          <p className="mt-1 text-xs text-[var(--dim)]">{tr("Full dataset per tenant: JSON for inspection/backup. Downloading an export also unlocks that tenant's Delete button.", "Conjunto completo por empresa: JSON para inspeção/backup. Baixar uma exportação também libera o botão Excluir da empresa.", "Conjunto completo por empresa: JSON para inspección/respaldo. Descargar una exportación también desbloquea el botón Eliminar de esa empresa.")}</p>
           <div className="mt-2 space-y-2">
             {(q.data?.tenants ?? []).map((t) => (
               <div key={t.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--surface2)] px-3 py-2.5">
@@ -6663,7 +6563,7 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
                   {exportedIds.has(t.id) && <span className="ml-1 text-xs font-bold text-green-700">{tr("✓ exported", "✓ exportado", "✓ exportado")}</span>}
                 </span>
                 <span className="flex shrink-0 gap-2">
-                  <button aria-label={tr(`Download JSON export for ${t.name}`, `Baixar a exportação JSON de ${t.name}`, `Descargar la exportación JSON de ${t.name}`)} disabled={exportMut.isPending} onClick={() => doExport(t)} className="rounded-lg bg-[#0f2a44] px-3 py-1.5 text-xs font-bold text-white active:opacity-80 disabled:opacity-40">JSON</button>
+                  <button aria-label={tr(`Download JSON export for ${t.name}`, `Baixar a exportação JSON de ${t.name}`, `Descargar la exportación JSON de ${t.name}`)} disabled={exportMut.isPending} onClick={() => doExport(t, "json")} className="rounded-lg bg-[#0f2a44] px-3 py-1.5 text-xs font-bold text-white active:opacity-80 disabled:opacity-40">JSON</button>
                 </span>
               </div>
             ))}
@@ -6701,5 +6601,116 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
         <p className="px-1 text-center text-[11px] text-[var(--dim)]">{tr("Suspended tenants keep all their data and can be reactivated anytime. Deleting a tenant is permanent and requires a fresh database export first.", "Empresas suspensas mantêm todos os dados e podem ser reativadas a qualquer momento. Excluir uma empresa é permanente e exige uma exportação nova do banco primeiro.", "Las empresas suspendidas conservan todos sus datos y se pueden reactivar en cualquier momento. Eliminar una empresa es permanente y primero requiere una exportación nueva de la base de datos.")}</p>
       </main>
     </div>
+  );
+}
+
+function SubscriptionPanel({ ownerEmail }: { ownerEmail: string }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["subscriptions", ownerEmail], queryFn: () => api.getSubscriptionOverview({ ownerEmail }) });
+  const [editingFee, setEditingFee] = useState<string | null>(null);
+  const [feeValue, setFeeValue] = useState("");
+  const [showPayFor, setShowPayFor] = useState<string | null>(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [payDate, setPayDate] = useState(todayInput());
+  const [payNotes, setPayNotes] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["subscriptions", ownerEmail] });
+
+  const setFee = useMutation({
+    mutationFn: (args: { companyId: string; weeklyFeeCents: number }) => api.setWeeklyFee({ ownerEmail, ...args }),
+    onSuccess: () => { invalidate(); setEditingFee(null); setMsg(tr("Weekly fee updated.", "Valor semanal atualizado.", "Valor semanal actualizado.")); },
+    onError: () => setMsg(tr("Could not update the fee.", "Não foi possível atualizar o valor.", "No se pudo actualizar el valor.")),
+  });
+
+  const recordPay = useMutation({
+    mutationFn: (args: { companyId: string; amountCents: number; paidDate: string; notes: string }) =>
+      api.recordSubscriptionPayment({ ownerEmail, ...args }),
+    onSuccess: () => { invalidate(); setShowPayFor(null); setPayAmount(""); setPayNotes(""); setMsg(tr("Payment recorded.", "Pagamento lançado.", "Pago registrado.")); },
+    onError: () => setMsg(tr("Could not record the payment.", "Não foi possível lançar o pagamento.", "No se pudo registrar el pago.")),
+  });
+
+  const payQ = useQuery({
+    queryKey: ["subpayments", ownerEmail, showPayFor],
+    queryFn: () => api.listSubscriptionPayments({ ownerEmail, companyId: showPayFor! }),
+    enabled: !!showPayFor,
+  });
+
+  return (
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Subscriptions", "Assinaturas", "Suscripciones")}>
+      <h2 className="font-bold">💳 {tr("Subscriptions", "Assinaturas", "Suscripciones")}</h2>
+      {msg && <p className="mt-2 rounded-xl bg-[var(--surface2)] px-3 py-2 text-sm font-semibold" role="status">{msg}</p>}
+      {q.isPending ? <p className="mt-2 text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p> : q.isError ? (
+        <p className="mt-2 text-sm text-red-600">{tr("Could not load subscriptions.", "Não foi possível carregar as assinaturas.", "No se pudieron cargar las suscripciones.")}</p>
+      ) : (
+        <div className="mt-3 space-y-3">
+          <div className="rounded-xl bg-[var(--surface2)] p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Total weekly", "Total semanal", "Total semanal")}</p>
+            <p className="text-2xl font-black">{fmtUSD(q.data.totalWeeklyCents)}</p>
+          </div>
+          {q.data.builders.map((b) => (
+            <div key={b.companyId} className="rounded-xl border border-[var(--border)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="font-bold">{b.companyName} <span className="text-xs font-normal text-[var(--dim)]">({b.code})</span></p>
+                  <p className="text-sm text-[var(--dim)]">👥 {b.userCount} {tr("users", "usuários", "usuarios")} • {b.billableUsers} {tr("billable", "pagantes", "de pago")}</p>
+                </div>
+                <div className="text-right">
+                  {editingFee === b.companyId ? (
+                    <div className="flex items-center gap-1">
+                      <input aria-label={tr("Weekly fee per user in dollars", "Valor semanal por usuário em dólares", "Valor semanal por usuario en dólares")} className={inputCls} inputMode="decimal" value={feeValue} onChange={(e) => setFeeValue(e.target.value)} placeholder="0.00" style={{ width: 90 }} />
+                      <button type="button" className={btnNavy} disabled={setFee.isPending} onClick={() => setFee.mutate({ companyId: b.companyId, weeklyFeeCents: Math.round(parseFloat(feeValue.replace(",", ".")) * 100) || 0 })}>{tr("Save", "Salvar", "Guardar")}</button>
+                      <button type="button" className={btnGhost} onClick={() => setEditingFee(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="font-bold">{fmtUSD(b.weeklyFeeCents)}<span className="text-xs font-normal text-[var(--dim)]\">/{tr("user/week", "usuário/semana", "usuario/semana")}</span></p>
+                      <p className="text-sm font-semibold text-green-700">= {fmtUSD(b.weeklyFeeCents * b.billableUsers)}<span className="text-xs font-normal text-[var(--dim)]">/{tr("week", "semana", "semana")}</span></p>
+                      <button type="button" className="text-xs font-bold text-[#f97316]" onClick={() => { setEditingFee(b.companyId); setFeeValue((b.weeklyFeeCents / 100).toFixed(2)); }}>{tr("Edit fee", "Editar valor", "Editar valor")}</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-[var(--dim)]">{tr("Paid total:", "Total pago:", "Total pagado:")} <span className="font-semibold text-green-700">{fmtUSD(b.totalPaidCents)}</span></span>
+                {b.lastPaymentDate && <span className="text-[var(--dim)]">• {tr("last:", "último:", "último:")} {fmtDate(b.lastPaymentDate)}</span>}
+                <button type="button" className={btnGhost} onClick={() => { setShowPayFor(showPayFor === b.companyId ? null : b.companyId); setPayDate(todayInput()); }}>
+                  {showPayFor === b.companyId ? tr("Close", "Fechar", "Cerrar") : tr("+ Record payment", "+ Lançar pagamento", "+ Registrar pago")}
+                </button>
+              </div>
+              {showPayFor === b.companyId && (
+                <div className="mt-2 rounded-xl bg-[var(--surface2)] p-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label={tr("Amount (USD)", "Valor (USD)", "Importe (USD)")}>
+                      <input aria-label={tr("Payment amount", "Valor do pagamento", "Importe del pago")} className={inputCls} inputMode="decimal" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="0.00" required />
+                    </Field>
+                    <Field label={tr("Date", "Data", "Fecha")}>
+                      <input aria-label={tr("Payment date", "Data do pagamento", "Fecha del pago")} type="date" className={inputCls} value={payDate} onChange={(e) => setPayDate(e.target.value)} required />
+                    </Field>
+                  </div>
+                  <Field label={tr("Notes (optional)", "Observações (opcional)", "Notas (opcional)")}>
+                    <input aria-label={tr("Payment notes", "Observações do pagamento", "Notas del pago")} className={inputCls} value={payNotes} onChange={(e) => setPayNotes(e.target.value)} />
+                  </Field>
+                  <button type="button" className={`${btnNavy} mt-2 w-full`} disabled={recordPay.isPending || !payAmount.trim()}
+                    onClick={() => recordPay.mutate({ companyId: b.companyId, amountCents: Math.round(parseFloat(payAmount.replace(",", ".")) * 100) || 0, paidDate: payDate, notes: payNotes })}>
+                    {tr("Record payment", "Lançar pagamento", "Registrar pago")}
+                  </button>
+                  {payQ.data && payQ.data.payments.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-xs font-bold uppercase tracking-wide text-[var(--dim)]">{tr("History", "Histórico", "Historial")}</p>
+                      <div className="mt-1 space-y-1">
+                        {payQ.data.payments.map((p) => (
+                          <p key={p.id} className="text-sm">{fmtDate(p.paidDate)} • <span className="font-semibold text-green-700">{fmtUSD(p.amountCents)}</span>{p.notes ? <span className="text-[var(--dim)]"> • {p.notes}</span> : null}</p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

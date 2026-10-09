@@ -4,7 +4,6 @@ import { api } from "./api";
 import { GeoMap } from "./GeoMap";
 import { makeStyledInvoicePdf } from "./invoicePdf";
 import { enqueueOutbox, isOffline, setOutboxSyncedHandler, startOutboxAutoSync, syncOutbox, useOnline, useOutboxItems } from "./offline";
-import mysqlSchemaText from "./assets/smartbuilder-mysql-schema.txt";
 import { LanguageContext, LanguageToggle, langDocValue, setCurrentLang, tr, useLanguage, type Lang } from "./i18n";
 
 /* Download a text file the app generated (exports, schema). */
@@ -6548,19 +6547,9 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
         {/* Subscriptions */}
         <SubscriptionPanel ownerEmail={ownerEmail} />
 
-        {/* Database: production schema + per-tenant exports */}
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Production database", "Banco de dados de produção", "Base de datos de producción")}>
-          <h2 className="font-bold">{tr("Production database — MySQL, one database per tenant", "Banco de dados de produção — MySQL, um banco por empresa", "Base de datos de producción: MySQL, una base por empresa")}</h2>
-          <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
-            {tr("The production schema file creates the platform database plus the per-tenant database layout. To move a tenant to production:", "O arquivo de esquema de produção cria o banco da plataforma e o layout de um banco por empresa. Para mover uma empresa para produção:", "El archivo de esquema de producción crea la base de datos de la plataforma y el diseño de una base por empresa. Para mover una empresa a producción:")}
-            {tr("create", "crie", "crea")} <span className="font-mono text-xs">smartbuilder_tenant_&lt;id&gt;</span>{tr(", run this schema, then import the tenant's SQL export below.", ", execute este esquema e depois importe a exportação SQL da empresa abaixo.", ", ejecuta este esquema y luego importa la exportación SQL de la empresa de abajo.")}
-          </p>
-          <button className={`${btnNavy} mt-3 w-full sm:w-auto`} aria-label={tr("Download the production MySQL schema file", "Baixar o arquivo de esquema MySQL de produção", "Descargar el archivo de esquema MySQL de producción")}
-            onClick={() => downloadTextFile("smartbuilder-mysql-schema.sql", mysqlSchemaText, "application/sql")}>
-            {tr("⬇ Download MySQL schema (smartbuilder-mysql-schema.sql)", "⬇ Baixar o esquema MySQL (smartbuilder-mysql-schema.sql)", "⬇ Descargar el esquema MySQL (smartbuilder-mysql-schema.sql)")}
-          </button>
-
-          <h3 className="mt-5 text-sm font-bold uppercase tracking-wide text-[var(--dim)]">{tr("Export tenant database", "Exportar o banco da empresa", "Exportar la base de datos de la empresa")}</h3>
+        {/* Database: per-tenant exports */}
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Tenant exports", "Exportações das empresas", "Exportaciones de las empresas")}>
+          <h2 className="font-bold">{tr("Export tenant database", "Exportar o banco da empresa", "Exportar la base de datos de la empresa")}</h2>
           <p className="mt-1 text-xs text-[var(--dim)]">{tr("Full dataset per tenant: JSON for inspection/backup. Downloading an export also unlocks that tenant's Delete button.", "Conjunto completo por empresa: JSON para inspeção/backup. Baixar uma exportação também libera o botão Excluir da empresa.", "Conjunto completo por empresa: JSON para inspección/respaldo. Descargar una exportación también desbloquea el botón Eliminar de esa empresa.")}</p>
           <div className="mt-2 space-y-2">
             {(q.data?.tenants ?? []).map((t) => (

@@ -1,597 +1,432 @@
 -- ============================================================================
--- SmartBuilder — production MySQL 8 schema (self-hosted build)
+-- SmartBuilder — Production MySQL schema (database-per-tenant)
+-- Version: 1.0 — 2026-10-04
 -- ============================================================================
--- One database for the whole platform. Every tenant's rows live in the
--- same tables, scoped by company_id — exactly how the app (server actions)
--- reads and writes them, and how the owner panel enforces tenant isolation.
--- (The older "one database per tenant" draft bundled in the pilot is
--- superseded by this file; db/seed runs the app bootstrap for demo data.)
 --
--- Conventions:
---   Engine InnoDB, charset utf8mb4. Money is integer cents (USD).
---   Instants are BIGINT milliseconds since epoch (the app's timestamp
---   columns), so check-in/out times keep full precision and timezone
---   handling stays in the app, matching the pilot 1:1.
---   Dates the app treats as calendar strings stay 'YYYY-MM-DD' VARCHARs.
---   Photos, blueprints and logos are inline data URLs (LONGTEXT).
+-- DESIGN
+--   1. One PLATFORM database:  smartbuilder_platform
+--        Registry of tenants + platform owner logins (Daniel's admin area).
+--   2. One DATABASE PER TENANT: smartbuilder_tenant_<tenant_id>
+--        Each customer company gets its own MySQL database. No customer
+--        ever shares tables with another customer.
 --
--- Apply:  mysql -u root -p < schema.sql        (or let Docker Compose do
---         it automatically on first boot — see DEPLOY.md)
+-- MIGRATION FROM THE PILOT
+--   The pilot stores every row with a company_id (tenant key). To migrate
+--   a tenant to production:
+--     1. In the owner panel: Tenants -> Export tenant database (SQL).
+--        The export contains INSERTs already stripped of company_id.
+--     2. CREATE DATABASE smartbuilder_tenant_<id>; run this schema file.
+--     3. Import the tenant's SQL dump.
+--     4. Register the tenant row in smartbuilder_platform.tenants.
+--
+-- CONVENTIONS
+--   Engine=InnoDB, utf8mb4. Money = DECIMAL(12,2) USD. Time = DATETIME
+--   stored in the tenant's local timezone (company setting). Coordinates
+--   = DECIMAL(10,7). Distances in feet.
+--
+-- ============================================================================
+-- PART 1 — PLATFORM DATABASE
 -- ============================================================================
 
-CREATE DATABASE IF NOT EXISTS smartbuilder
+CREATE DATABASE IF NOT EXISTS smartbuilder_platform
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE smartbuilder;
+USE smartbuilder_platform;
 
--- ---------------------------------------------------------------------------
--- Tenants & platform
--- ---------------------------------------------------------------------------
+-- Platform owners (Daniel's super-admin logins)
+CREATE TABLE platform_owners (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name          VARCHAR(120) NOT NULL,
+  email         VARCHAR(190) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_owner_email (email)
+) ENGINE=InnoDB;
 
--- Companies (tenants). id is the tenant key, e.g. 'BUILDER001'.
+-- Tenant registry: one row per customer company -> one database
+CREATE TABLE tenants (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_name VARCHAR(160) NOT NULL,
+  db_name      VARCHAR(64)  NOT NULL COMMENT 'e.g. smartbuilder_tenant_12',
+  db_host      VARCHAR(120) NOT NULL DEFAULT 'localhost',
+  status       ENUM('trial','active','suspended') NOT NULL DEFAULT 'trial',
+  plan         VARCHAR(60)  NOT NULL DEFAULT 'standard',
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_tenant_db (db_name)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- PART 2 — TENANT DATABASE (run once per tenant)
+-- ============================================================================
+-- CREATE DATABASE smartbuilder_tenant_<id> CHARACTER SET utf8mb4
+--   COLLATE utf8mb4_unicode_ci;
+-- USE smartbuilder_tenant_<id>;
+
+-- ---- Company profile -------------------------------------------------------
 CREATE TABLE companies (
-  id                 VARCHAR(64)  NOT NULL,
-  name               VARCHAR(191) NOT NULL,
-  code               VARCHAR(64)  NOT NULL,
-  status             ENUM('trial','active','suspended') NOT NULL DEFAULT 'trial',
-  plan               VARCHAR(64)  NOT NULL DEFAULT 'Pilot',
-  created_at         INT          NOT NULL DEFAULT 0,  -- ms epoch, 0 = unset
-  -- Company profile: renders as the invoice header "from" block
-  phone              VARCHAR(40)  NOT NULL DEFAULT '',
-  email              VARCHAR(190) NOT NULL DEFAULT '',
-  address            TEXT         NOT NULL,
-  street_number      VARCHAR(20)  NOT NULL DEFAULT '',
-  street_name        VARCHAR(160) NOT NULL DEFAULT '',
-  city               VARCHAR(100) NOT NULL DEFAULT '',
-  state              VARCHAR(40)  NOT NULL DEFAULT '',
-  zip                VARCHAR(12)  NOT NULL DEFAULT '',
-  invoice_accent_color VARCHAR(16) NOT NULL DEFAULT '#F97316',
-  logo_url           LONGTEXT     NOT NULL,  -- inline data URL, '' = none
-  services_seeded    INT          NOT NULL DEFAULT 0,
-  fleet_seeded       INT          NOT NULL DEFAULT 0,
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name       VARCHAR(160) NOT NULL,
+  timezone   VARCHAR(64)  NOT NULL DEFAULT 'America/New_York',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id)
 ) ENGINE=InnoDB;
 
--- Platform owners (SmartBuilder super-admins, separate from tenants)
-CREATE TABLE platform_owners (
-  id    INT NOT NULL AUTO_INCREMENT,
-  email VARCHAR(190) NOT NULL,
-  name  VARCHAR(120) NOT NULL DEFAULT '',
-  PRIMARY KEY (id),
-  KEY idx_owner_email (email)
-) ENGINE=InnoDB;
-
--- ---------------------------------------------------------------------------
--- People
--- ---------------------------------------------------------------------------
-
--- Clients of a company (one client -> many projects, or none)
-CREATE TABLE clients (
-  id            INT NOT NULL AUTO_INCREMENT,
-  company_id    VARCHAR(64)  NOT NULL,
-  name          VARCHAR(191) NOT NULL,
-  contact_name  VARCHAR(120) NOT NULL DEFAULT '',
-  phone         VARCHAR(40)  NOT NULL DEFAULT '',
-  email         VARCHAR(190) NOT NULL DEFAULT '',
-  email2        VARCHAR(190) NOT NULL DEFAULT '',  -- second bill-to recipient
-  address       TEXT         NOT NULL,             -- legacy free-text
-  street_number VARCHAR(20)  NOT NULL DEFAULT '',
-  street_name   VARCHAR(160) NOT NULL DEFAULT '',
-  city          VARCHAR(100) NOT NULL DEFAULT '',
-  state         VARCHAR(40)  NOT NULL DEFAULT '',
-  zip           VARCHAR(12)  NOT NULL DEFAULT '',
-  PRIMARY KEY (id),
-  KEY idx_clients_company (company_id)
-) ENGINE=InnoDB;
-
--- Employees / users. Roles: admin (company owner), gerente (manager),
--- funcionario (field employee), cliente (read-only client portal, scoped
--- to client_id). portal_password is a SHA-256 hex digest, never plaintext.
-CREATE TABLE employees (
-  id              INT NOT NULL AUTO_INCREMENT,
-  company_id      VARCHAR(64) NOT NULL,
-  name            VARCHAR(191) NOT NULL,
-  role            ENUM('admin','gerente','funcionario','cliente') NOT NULL DEFAULT 'funcionario',
-  client_id       INT NULL,
-  portal_password VARCHAR(128) NOT NULL DEFAULT '',
-  portal_enabled  INT NOT NULL DEFAULT 1,
-  trade           VARCHAR(120) NOT NULL DEFAULT '',
-  phone           VARCHAR(40)  NOT NULL DEFAULT '',
-  email           VARCHAR(190) NOT NULL DEFAULT '',
-  pay_type        ENUM('hora','diaria','contrato') NOT NULL DEFAULT 'hora',
-  pay_rate        INT NOT NULL DEFAULT 0,  -- cents (per hour / day / contract)
-  status          ENUM('ativo','inativo') NOT NULL DEFAULT 'ativo',
-  PRIMARY KEY (id),
-  KEY idx_employees_company (company_id),
-  KEY idx_employees_client (client_id)
-) ENGINE=InnoDB;
-
--- Per-tenant point rules (no-show cutoff, auto-close, overtime)
 CREATE TABLE company_settings (
-  company_id      VARCHAR(64) NOT NULL,
-  no_show_cutoff  VARCHAR(5)  NOT NULL DEFAULT '09:00',  -- HH:MM
-  auto_close_time VARCHAR(5)  NOT NULL DEFAULT '17:00',  -- HH:MM
-  ot_enabled      INT    NOT NULL DEFAULT 0,
-  ot_daily_hours  DOUBLE NOT NULL DEFAULT 8,
-  ot_weekly_hours DOUBLE NOT NULL DEFAULT 40,
-  ot_multiplier   DOUBLE NOT NULL DEFAULT 1.5,
-  PRIMARY KEY (company_id)
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  setting_key VARCHAR(80)  NOT NULL,
+  setting_value VARCHAR(255) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_setting (setting_key)
+) ENGINE=InnoDB COMMENT 'auto_checkout_time=17:00, no_show_cutoff=09:00, geofence_default_ft=656, ot_enabled=0, ot_daily_hours=8, ot_weekly_hours=40, ot_multiplier=1.5, ...';
+
+-- ---- Users -----------------------------------------------------------------
+CREATE TABLE users (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name          VARCHAR(120) NOT NULL,
+  email         VARCHAR(190) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role          ENUM('admin','manager','employee') NOT NULL DEFAULT 'employee',
+  status        ENUM('active','inactive') NOT NULL DEFAULT 'active',
+  phone         VARCHAR(40)  NULL,
+  pay_type      ENUM('hourly','daily','contract') NOT NULL DEFAULT 'hourly',
+  pay_rate      DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT 'per hour, per day, or contract amount',
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_user_email (email),
+  KEY idx_user_role (role)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------------
--- Projects, jobs, tasks
--- ---------------------------------------------------------------------------
+-- ---- Clients (1 client -> N projects, or none) ------------------------------
+CREATE TABLE clients (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name           VARCHAR(160) NOT NULL,
+  contact_person VARCHAR(120) NULL,
+  phone          VARCHAR(40)  NULL,
+  email          VARCHAR(190) NULL,
+  bill_number    VARCHAR(20)  NULL,
+  bill_street    VARCHAR(160) NULL,
+  bill_city      VARCHAR(100) NULL,
+  bill_state     CHAR(2)      NULL,
+  bill_zip       VARCHAR(12)  NULL,
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_client_name (name)
+) ENGINE=InnoDB;
 
--- Projects (job sites). budget = internal cost budget (cents);
--- estimated_value = contract/quoted price (cents). Geofence = center +
--- radius in meters.
+-- ---- Projects (job sites) ---------------------------------------------------
 CREATE TABLE projects (
-  id              INT NOT NULL AUTO_INCREMENT,
-  company_id      VARCHAR(64) NOT NULL,
-  client_id       INT NULL,
-  name            VARCHAR(191) NOT NULL,
-  scope           TEXT NOT NULL,  -- shown to the crew as "What to do"
-  address         TEXT NOT NULL,  -- legacy free-text
-  street_number   VARCHAR(20)  NOT NULL DEFAULT '',
-  street_name     VARCHAR(160) NOT NULL DEFAULT '',
-  city            VARCHAR(100) NOT NULL DEFAULT '',
-  state           VARCHAR(40)  NOT NULL DEFAULT '',
-  zip             VARCHAR(12)  NOT NULL DEFAULT '',
-  status          ENUM('planejada','andamento','pausada','concluida') NOT NULL DEFAULT 'andamento',
-  start_date      VARCHAR(10) NOT NULL DEFAULT '',  -- YYYY-MM-DD
-  end_date        VARCHAR(10) NOT NULL DEFAULT '',
-  budget          INT NOT NULL DEFAULT 0,
-  estimated_value INT NOT NULL DEFAULT 0,
-  progress        INT NOT NULL DEFAULT 0,  -- 0-100
-  geo_lat         DOUBLE NULL,
-  geo_lng         DOUBLE NULL,
-  geo_radius      INT NOT NULL DEFAULT 200,  -- meters
-  PRIMARY KEY (id),
-  KEY idx_projects_company (company_id),
-  KEY idx_projects_client (client_id)
-) ENGINE=InnoDB;
-
--- Jobs (trades) inside a project — e.g. Roof and Siding on the same site.
--- service_id links the job to the tenant's services catalog (nullable).
-CREATE TABLE jobs (
-  id              INT NOT NULL AUTO_INCREMENT,
-  company_id      VARCHAR(64) NOT NULL,
-  project_id      INT NOT NULL,
-  service_id      INT NULL,
-  name            VARCHAR(191) NOT NULL,
-  scope           TEXT NOT NULL,
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id       BIGINT UNSIGNED NULL COMMENT 'optional; a project may have no client',
+  name            VARCHAR(160) NOT NULL,
+  scope_of_work   TEXT NULL COMMENT 'shown to crew as "What to do"',
   status          ENUM('scheduled','in_progress','done') NOT NULL DEFAULT 'scheduled',
-  start_date      VARCHAR(10) NOT NULL DEFAULT '',
-  end_date        VARCHAR(10) NOT NULL DEFAULT '',
-  estimated_value INT NOT NULL DEFAULT 0,  -- cents, per-job quote
+  site_number     VARCHAR(20)  NULL,
+  site_street     VARCHAR(160) NULL,
+  site_city       VARCHAR(100) NULL,
+  site_state      CHAR(2)      NULL,
+  site_zip        VARCHAR(12)  NULL,
+  geofence_lat    DECIMAL(10,7) NULL COMMENT 'auto-filled by address geocoding',
+  geofence_lng    DECIMAL(10,7) NULL,
+  geofence_radius_ft INT UNSIGNED NOT NULL DEFAULT 656,
+  estimated_value DECIMAL(12,2) NULL COMMENT 'contract/quoted price',
+  start_date      DATE NULL,
+  end_date        DATE NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_jobs_company (company_id),
-  KEY idx_jobs_project (project_id)
+  KEY idx_project_client (client_id),
+  KEY idx_project_status (status),
+  CONSTRAINT fk_project_client FOREIGN KEY (client_id)
+    REFERENCES clients (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
--- Tasks (checklist) inside a job. assignee_id is the legacy single-assignee
--- column (first assignee, kept in sync); the full set lives in
--- task_assignees. NULL assignee set = whole job crew.
+-- ---- Jobs (trades inside a project: Roof, Siding... different crews) --------
+CREATE TABLE jobs (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  project_id      BIGINT UNSIGNED NOT NULL,
+  name            VARCHAR(120) NOT NULL COMMENT 'e.g. Roof replacement',
+  scope           TEXT NULL COMMENT 'what the crew must do',
+  status          ENUM('scheduled','in_progress','done') NOT NULL DEFAULT 'scheduled',
+  estimated_value DECIMAL(12,2) NULL,
+  start_date      DATE NULL,
+  end_date        DATE NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_job_project (project_id),
+  CONSTRAINT fk_job_project FOREIGN KEY (project_id)
+    REFERENCES projects (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---- Job tasks (checklist inside each job, worked by the crew) --------------
+-- assignee_id NULL = whole job crew. In Progress persists across days until
+-- the worker marks Done; started_at/completed_at drive elapsed-time display.
 CREATE TABLE job_tasks (
-  id           INT NOT NULL AUTO_INCREMENT,
-  company_id   VARCHAR(64) NOT NULL,
-  job_id       INT NOT NULL,
-  title        VARCHAR(255) NOT NULL,
-  notes        TEXT NOT NULL,
-  assignee_id  INT NULL,
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  job_id       BIGINT UNSIGNED NOT NULL,
+  title        VARCHAR(191) NOT NULL,
+  notes        TEXT NULL,
+  assignee_id  BIGINT UNSIGNED NULL COMMENT 'NULL = whole job crew',
   status       ENUM('todo','in_progress','done') NOT NULL DEFAULT 'todo',
   sort_order   INT NOT NULL DEFAULT 0,
-  created_at   BIGINT NOT NULL,  -- ms epoch
-  started_at   BIGINT NULL,
-  completed_at BIGINT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  started_at   DATETIME NULL,
+  completed_at DATETIME NULL,
   PRIMARY KEY (id),
-  KEY idx_tasks_company (company_id),
-  KEY idx_tasks_job (job_id, status, sort_order)
+  KEY idx_task_job (job_id, status, sort_order),
+  CONSTRAINT fk_task_job      FOREIGN KEY (job_id)      REFERENCES jobs (id)  ON DELETE CASCADE,
+  CONSTRAINT fk_task_assignee FOREIGN KEY (assignee_id) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
--- Task assignees (many employees per task)
-CREATE TABLE task_assignees (
-  id          INT NOT NULL AUTO_INCREMENT,
-  company_id  VARCHAR(64) NOT NULL,
-  task_id     INT NOT NULL,
-  employee_id INT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_task_assignees_task (task_id),
-  KEY idx_task_assignees_company (company_id)
-) ENGINE=InnoDB;
-
--- Photos attached to a task (Before / During / After). photo_url is an
--- inline device image (data:image/...), never an external URL.
+-- ---- Task photos (Before / During / After evidence per task) ----------------
 CREATE TABLE task_photos (
-  id          INT NOT NULL AUTO_INCREMENT,
-  company_id  VARCHAR(64) NOT NULL,
-  task_id     INT NOT NULL,
-  employee_id INT NOT NULL,  -- who uploaded it
-  photo_url   LONGTEXT NOT NULL,
-  stage       ENUM('before','during','after') NOT NULL DEFAULT 'during',
-  created_at  BIGINT NOT NULL,  -- ms epoch
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  task_id    BIGINT UNSIGNED NOT NULL,
+  user_id    BIGINT UNSIGNED NOT NULL COMMENT 'who uploaded it',
+  photo_url  LONGTEXT NULL COMMENT 'inline device image (data:image/...)',
+  stage      ENUM('before','during','after') NOT NULL DEFAULT 'during',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_task_photos_task (task_id, created_at)
+  KEY idx_photo_task (task_id, created_at),
+  CONSTRAINT fk_photo_task FOREIGN KEY (task_id) REFERENCES job_tasks (id) ON DELETE CASCADE,
+  CONSTRAINT fk_photo_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB;
 
--- Crew assignments: employee <-> project, optionally to one job
--- (job_id NULL = the project as a whole).
+-- ---- Vendors ----------------------------------------------------------------
+CREATE TABLE vendors (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name       VARCHAR(160) NOT NULL,
+  contact    VARCHAR(120) NULL,
+  phone      VARCHAR(40)  NULL,
+  email      VARCHAR(190) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+-- ---- Crew assignments (who works which job/project, per day) ---------------
 CREATE TABLE assignments (
-  id          INT NOT NULL AUTO_INCREMENT,
-  company_id  VARCHAR(64) NOT NULL,
-  project_id  INT NOT NULL,
-  job_id      INT NULL,
-  employee_id INT NOT NULL,
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id    BIGINT UNSIGNED NOT NULL,
+  project_id BIGINT UNSIGNED NOT NULL,
+  job_id     BIGINT UNSIGNED NULL COMMENT 'NULL = whole project',
+  work_date  DATE NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_assignments_company (company_id),
-  KEY idx_assignments_project (project_id),
-  KEY idx_assignments_employee (employee_id)
+  KEY idx_assign_user_date (user_id, work_date),
+  KEY idx_assign_project (project_id),
+  CONSTRAINT fk_assign_user    FOREIGN KEY (user_id)    REFERENCES users (id)    ON DELETE CASCADE,
+  CONSTRAINT fk_assign_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+  CONSTRAINT fk_assign_job     FOREIGN KEY (job_id)     REFERENCES jobs (id)     ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------------------------
--- Time tracking (GPS-validated check-in/out)
--- ---------------------------------------------------------------------------
-
+-- ---- Timesheets (anti-fraud: GPS-validated, tamper-proof) -------------------
 CREATE TABLE timesheets (
-  id                INT NOT NULL AUTO_INCREMENT,
-  company_id        VARCHAR(64) NOT NULL,
-  project_id        INT NOT NULL,
-  job_id            INT NULL,  -- NULL = project-level entry
-  employee_id       INT NOT NULL,
-  check_in_at       BIGINT NOT NULL,  -- ms epoch
-  check_out_at      BIGINT NULL,
-  in_lat            DOUBLE NULL,
-  in_lng            DOUBLE NULL,
-  out_lat           DOUBLE NULL,
-  out_lng           DOUBLE NULL,
-  in_zone           VARCHAR(16) NOT NULL DEFAULT '',  -- dentro|fora|sem_gps|sem_cerca
-  out_zone          VARCHAR(16) NOT NULL DEFAULT '',
-  in_dist_m         INT NULL,  -- meters from geofence center
-  out_dist_m        INT NULL,
-  auto_closed       INT NOT NULL DEFAULT 0,  -- 1 = closed at the auto-close time
-  hours_calc        DOUBLE NOT NULL DEFAULT 0,
-  pay_type_snapshot ENUM('hora','diaria','contrato') NOT NULL DEFAULT 'hora',
-  pay_rate_snapshot INT NOT NULL DEFAULT 0,  -- cents; history never rewrites
-  status            ENUM('aberto','pendente','aprovado','rejeitado') NOT NULL DEFAULT 'aberto',
-  note              TEXT NOT NULL,
-  work_date         VARCHAR(10) NOT NULL,  -- YYYY-MM-DD
+  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id            BIGINT UNSIGNED NOT NULL,
+  project_id         BIGINT UNSIGNED NOT NULL,
+  job_id             BIGINT UNSIGNED NULL,
+  check_in           DATETIME NOT NULL,
+  check_out          DATETIME NULL,
+  check_in_lat       DECIMAL(10,7) NULL,
+  check_in_lng       DECIMAL(10,7) NULL,
+  check_out_lat      DECIMAL(10,7) NULL,
+  check_out_lng      DECIMAL(10,7) NULL,
+  check_in_inside    TINYINT(1) NULL COMMENT '1=inside geofence, 0=flagged OUTSIDE',
+  check_out_inside   TINYINT(1) NULL,
+  hours_worked       DECIMAL(6,2) NULL COMMENT 'computed at check-out/auto-close',
+  pay_type_snapshot  ENUM('hourly','daily','contract') NOT NULL COMMENT 'frozen at check-in; history never rewrites',
+  pay_rate_snapshot  DECIMAL(12,2) NOT NULL,
+  labor_cost         DECIMAL(12,2) NULL COMMENT 'computed from snapshot at approval',
+  approval_status    ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+  approved_by        BIGINT UNSIGNED NULL,
+  auto_closed        TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1=auto check-out at 17:00',
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_sheets_company (company_id),
-  KEY idx_sheets_employee_date (employee_id, work_date),
-  KEY idx_sheets_project (project_id)
+  KEY idx_ts_user_date (user_id, check_in),
+  KEY idx_ts_project (project_id),
+  KEY idx_ts_approval (approval_status),
+  CONSTRAINT fk_ts_user    FOREIGN KEY (user_id)    REFERENCES users (id),
+  CONSTRAINT fk_ts_project FOREIGN KEY (project_id) REFERENCES projects (id),
+  CONSTRAINT fk_ts_job     FOREIGN KEY (job_id)     REFERENCES jobs (id) ON DELETE SET NULL,
+  CONSTRAINT fk_ts_approver FOREIGN KEY (approved_by) REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
--- GPS trail while the app is open (pings, not background tracking)
+-- GPS trail while the app is open (30-min pings; NOT background tracking)
 CREATE TABLE location_pings (
-  id           INT NOT NULL AUTO_INCREMENT,
-  company_id   VARCHAR(64) NOT NULL,
-  timesheet_id INT NULL,
-  employee_id  INT NOT NULL,
-  lat          DOUBLE NOT NULL,
-  lng          DOUBLE NOT NULL,
-  dist_m       INT NULL,
-  zone         VARCHAR(16) NOT NULL DEFAULT '',
-  created_at   BIGINT NOT NULL,  -- ms epoch
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  timesheet_id BIGINT UNSIGNED NOT NULL,
+  lat          DECIMAL(10,7) NOT NULL,
+  lng          DECIMAL(10,7) NOT NULL,
+  recorded_at  DATETIME NOT NULL,
   PRIMARY KEY (id),
-  KEY idx_pings_sheet (timesheet_id, created_at)
+  KEY idx_ping_ts (timesheet_id, recorded_at),
+  CONSTRAINT fk_ping_ts FOREIGN KEY (timesheet_id)
+    REFERENCES timesheets (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- Audit log of manager/admin timesheet adjustments
+-- Audit log: every manager/admin hour adjustment (who/when/old/new/reason)
 CREATE TABLE timesheet_adjustments (
-  id               INT NOT NULL AUTO_INCREMENT,
-  company_id       VARCHAR(64) NOT NULL,
-  timesheet_id     INT NOT NULL,
-  adjusted_by      INT NOT NULL,  -- employee id of the manager/admin
-  adjusted_by_name VARCHAR(191) NOT NULL DEFAULT '',
-  old_check_in_at  BIGINT NOT NULL,
-  new_check_in_at  BIGINT NOT NULL,
-  old_check_out_at BIGINT NULL,
-  new_check_out_at BIGINT NULL,
-  old_hours        DOUBLE NOT NULL DEFAULT 0,
-  new_hours        DOUBLE NOT NULL DEFAULT 0,
-  reason           VARCHAR(255) NOT NULL DEFAULT '',
-  created_at       BIGINT NOT NULL,  -- ms epoch
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  timesheet_id BIGINT UNSIGNED NOT NULL,
+  adjusted_by  BIGINT UNSIGNED NOT NULL,
+  old_check_in DATETIME NULL,
+  new_check_in DATETIME NULL,
+  old_check_out DATETIME NULL,
+  new_check_out DATETIME NULL,
+  reason       VARCHAR(255) NOT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_adjustments_sheet (timesheet_id)
+  KEY idx_adj_ts (timesheet_id),
+  CONSTRAINT fk_adj_ts   FOREIGN KEY (timesheet_id) REFERENCES timesheets (id) ON DELETE CASCADE,
+  CONSTRAINT fk_adj_user FOREIGN KEY (adjusted_by)  REFERENCES users (id)
 ) ENGINE=InnoDB;
 
--- Time logged against a task (timer segments + manual hour logs)
-CREATE TABLE task_time_logs (
-  id          INT NOT NULL AUTO_INCREMENT,
-  company_id  VARCHAR(64) NOT NULL,
-  task_id     INT NOT NULL,
-  employee_id INT NOT NULL,
-  kind        ENUM('timer','manual') NOT NULL DEFAULT 'timer',
-  started_at  BIGINT NULL,  -- ms epoch; NULL while a manual row has none
-  ended_at    BIGINT NULL,  -- NULL while the timer is running
-  minutes     DOUBLE NOT NULL DEFAULT 0,
-  note        VARCHAR(255) NOT NULL DEFAULT '',
-  created_at  BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_task_time_task (task_id),
-  KEY idx_task_time_employee (employee_id)
-) ENGINE=InnoDB;
-
--- Field progress updates (photos / notes per project)
-CREATE TABLE progress_updates (
-  id          INT NOT NULL AUTO_INCREMENT,
-  company_id  VARCHAR(64) NOT NULL,
-  project_id  INT NOT NULL,
-  employee_id INT NOT NULL,
-  note        TEXT NOT NULL,
-  photo_url   LONGTEXT NOT NULL,  -- inline data URL, '' = none
-  created_at  BIGINT NOT NULL,    -- ms epoch
-  PRIMARY KEY (id),
-  KEY idx_progress_project (project_id, created_at)
-) ENGINE=InnoDB;
-
--- ---------------------------------------------------------------------------
--- Services catalog, measurements, blueprints
--- ---------------------------------------------------------------------------
-
--- Reusable kinds of work a company sells/measures (per tenant).
--- default_rate is cents per unit; 0 = no default rate.
-CREATE TABLE services (
-  id           INT NOT NULL AUTO_INCREMENT,
-  company_id   VARCHAR(64) NOT NULL,
-  name         VARCHAR(191) NOT NULL,
-  unit         VARCHAR(40)  NOT NULL DEFAULT 'sq ft',
-  default_rate INT NOT NULL DEFAULT 0,
-  sort_order   INT NOT NULL DEFAULT 0,
-  created_at   BIGINT NOT NULL,  -- ms epoch
-  PRIMARY KEY (id),
-  KEY idx_services_company (company_id)
-) ENGINE=InnoDB;
-
--- Required services & measurements on a project. Service name/unit/rate
--- are snapshotted onto the line so it survives later catalog edits.
-CREATE TABLE project_services (
-  id           INT NOT NULL AUTO_INCREMENT,
-  company_id   VARCHAR(64) NOT NULL,
-  project_id   INT NOT NULL,
-  service_id   INT NULL,
-  service_name VARCHAR(191) NOT NULL,
-  unit         VARCHAR(40) NOT NULL DEFAULT 'sq ft',
-  quantity     DOUBLE NOT NULL DEFAULT 0,
-  rate         INT NOT NULL DEFAULT 0,  -- cents per unit, snapshot
-  sort_order   INT NOT NULL DEFAULT 0,
-  created_at   BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_project_services_project (project_id)
-) ENGINE=InnoDB;
-
--- Plans & blueprints uploaded to a project. file_data is an inline data
--- URL (PDFs stay PDFs; images are downscaled client-side first).
--- thumbnail_data is a small preview image ('' for PDFs).
-CREATE TABLE project_plans (
-  id              INT NOT NULL AUTO_INCREMENT,
-  company_id      VARCHAR(64) NOT NULL,
-  project_id      INT NOT NULL,
-  name            VARCHAR(255) NOT NULL,
-  mime_type       VARCHAR(120) NOT NULL DEFAULT '',
-  file_data       LONGTEXT NOT NULL,
-  thumbnail_data  LONGTEXT NOT NULL,
-  file_size       INT NOT NULL DEFAULT 0,  -- original bytes
-  uploaded_by     INT NOT NULL DEFAULT 0,  -- employee id
-  created_at      BIGINT NOT NULL,         -- ms epoch
-  PRIMARY KEY (id),
-  KEY idx_project_plans_project (project_id)
-) ENGINE=InnoDB;
-
--- ---------------------------------------------------------------------------
--- Materials, invoices, payroll, notifications
--- ---------------------------------------------------------------------------
-
--- Materials / expenses per project. billed_invoice_id is set when the
--- material is pulled onto an invoice (prevents double-billing).
+-- ---- Materials & expenses (optional per project) ----------------------------
 CREATE TABLE expenses (
-  id               INT NOT NULL AUTO_INCREMENT,
-  company_id       VARCHAR(64) NOT NULL,
-  project_id       INT NOT NULL,
-  item             VARCHAR(255) NOT NULL,
-  quantity         DOUBLE NOT NULL DEFAULT 1,
-  unit_cost        INT NOT NULL DEFAULT 0,  -- cents
-  supplier         VARCHAR(191) NOT NULL DEFAULT '',
-  expense_date     VARCHAR(10) NOT NULL,    -- YYYY-MM-DD
-  receipt_note     TEXT NOT NULL,
-  billed_invoice_id INT NULL,
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  project_id  BIGINT UNSIGNED NOT NULL,
+  category    VARCHAR(80) NOT NULL COMMENT 'material, expense, ...',
+  vendor_id   BIGINT UNSIGNED NULL,
+  description VARCHAR(255) NOT NULL,
+  quantity    DECIMAL(10,2) NULL,
+  unit_cost   DECIMAL(12,2) NULL,
+  amount      DECIMAL(12,2) NOT NULL,
+  expense_date DATE NOT NULL,
+  receipt_url VARCHAR(500) NULL,
+  billed_invoice_id BIGINT UNSIGNED NULL COMMENT 'invoice this material was billed on (NULL = not billed yet)',
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_expenses_company (company_id),
-  KEY idx_expenses_project (project_id)
+  KEY idx_expense_project (project_id),
+  KEY idx_expense_billed (billed_invoice_id),
+  CONSTRAINT fk_expense_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+  CONSTRAINT fk_expense_vendor  FOREIGN KEY (vendor_id)  REFERENCES vendors (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- ---- Invoices ----------------------------------------------------------------
 CREATE TABLE invoices (
-  id         INT NOT NULL AUTO_INCREMENT,
-  company_id VARCHAR(64) NOT NULL,
-  client_id  INT NULL,
-  project_id INT NULL,
-  number     VARCHAR(40) NOT NULL,
-  issue_date VARCHAR(10) NOT NULL,  -- YYYY-MM-DD
-  due_date   VARCHAR(10) NOT NULL,
-  terms      VARCHAR(40) NOT NULL DEFAULT 'NET 30',
-  status     ENUM('aberta','parcial','paga','vencida') NOT NULL DEFAULT 'aberta',
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id    BIGINT UNSIGNED NOT NULL,
+  project_id   BIGINT UNSIGNED NULL,
+  invoice_no   VARCHAR(40) NOT NULL,
+  issue_date   DATE NOT NULL,
+  due_date     DATE NULL,
+  subtotal     DECIMAL(12,2) NOT NULL DEFAULT 0,
+  tax          DECIMAL(12,2) NOT NULL DEFAULT 0,
+  total        DECIMAL(12,2) NOT NULL DEFAULT 0,
+  amount_paid  DECIMAL(12,2) NOT NULL DEFAULT 0,
+  balance      DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT 'total - amount_paid',
+  status       ENUM('open','partial','paid','overdue') NOT NULL DEFAULT 'open',
+  notes        TEXT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_invoices_company (company_id),
-  KEY idx_invoices_client (client_id),
-  KEY idx_invoices_status (status)
+  UNIQUE KEY uq_invoice_no (invoice_no),
+  KEY idx_invoice_client (client_id),
+  KEY idx_invoice_status (status),
+  CONSTRAINT fk_invoice_client  FOREIGN KEY (client_id)  REFERENCES clients (id),
+  CONSTRAINT fk_invoice_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 CREATE TABLE invoice_items (
-  id          INT NOT NULL AUTO_INCREMENT,
-  invoice_id  INT NOT NULL,
-  description TEXT NOT NULL,
-  quantity    DOUBLE NOT NULL DEFAULT 1,
-  unit_price  INT NOT NULL DEFAULT 0,  -- cents
-  expense_id  INT NULL,  -- source material when pulled from expenses
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  invoice_id  BIGINT UNSIGNED NOT NULL,
+  description VARCHAR(255) NOT NULL,
+  quantity    DECIMAL(10,2) NOT NULL DEFAULT 1,
+  unit_price  DECIMAL(12,2) NOT NULL,
+  line_total  DECIMAL(12,2) NOT NULL,
+  expense_id  BIGINT UNSIGNED NULL COMMENT 'source material/expense when pulled from expenses',
   PRIMARY KEY (id),
-  KEY idx_invoice_items_invoice (invoice_id)
+  KEY idx_item_invoice (invoice_id),
+  KEY idx_item_expense (expense_id),
+  CONSTRAINT fk_item_invoice FOREIGN KEY (invoice_id)
+    REFERENCES invoices (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE invoice_payments (
-  id         INT NOT NULL AUTO_INCREMENT,
-  invoice_id INT NOT NULL,
-  amount     INT NOT NULL DEFAULT 0,  -- cents
-  pay_date   VARCHAR(10) NOT NULL,    -- YYYY-MM-DD
-  method     VARCHAR(60) NOT NULL DEFAULT 'Check',
-  notes      VARCHAR(255) NOT NULL DEFAULT '',
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  invoice_id BIGINT UNSIGNED NOT NULL,
+  amount     DECIMAL(12,2) NOT NULL,
+  paid_at    DATE NOT NULL,
+  method     VARCHAR(60) NULL,
+  notes      VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_invoice_payments_invoice (invoice_id)
+  KEY idx_pay_invoice (invoice_id),
+  CONSTRAINT fk_pay_invoice FOREIGN KEY (invoice_id)
+    REFERENCES invoices (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- Payroll payouts: one row per employee per Mon–Sun period; a row locks
--- that employee+period against recalculation.
+-- ---- Field progress (photos / notes) -----------------------------------------
+CREATE TABLE progress_updates (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  project_id BIGINT UNSIGNED NOT NULL,
+  job_id     BIGINT UNSIGNED NULL,
+  user_id    BIGINT UNSIGNED NOT NULL,
+  photo_url  VARCHAR(500) NULL,
+  note       TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_prog_project (project_id, created_at),
+  CONSTRAINT fk_prog_project FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
+  CONSTRAINT fk_prog_job     FOREIGN KEY (job_id)     REFERENCES jobs (id) ON DELETE SET NULL,
+  CONSTRAINT fk_prog_user    FOREIGN KEY (user_id)    REFERENCES users (id)
+) ENGINE=InnoDB;
+
+-- ---- Notifications (in-app; phone push comes with the native app) -------------
+CREATE TABLE notifications (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id    BIGINT UNSIGNED NOT NULL COMMENT 'recipient (users.id)',
+  type       VARCHAR(32) NOT NULL COMMENT 'out_of_zone, no_show, task_done, task_assigned, timesheet_pending, invoice_overdue, invoice_payment',
+  title      VARCHAR(255) NOT NULL,
+  detail     TEXT NULL,
+  link_view  VARCHAR(24) NOT NULL DEFAULT '' COMMENT 'invoices, projects, entries, payroll, field',
+  link_id    BIGINT UNSIGNED NULL COMMENT 'record id inside link_view',
+  read_at    DATETIME NULL,
+  dedupe_key VARCHAR(120) NOT NULL DEFAULT '' COMMENT 'idempotency key for auto-generated notifications',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_notif_user (user_id, read_at),
+  UNIQUE KEY uq_notif_dedupe (user_id, dedupe_key),
+  CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---- Payroll payouts (one row per employee per Mon-Sun period; locks it) -----
 CREATE TABLE payroll_payouts (
-  id            INT NOT NULL AUTO_INCREMENT,
-  company_id    VARCHAR(64) NOT NULL,
-  employee_id   INT NOT NULL,
-  period_start  VARCHAR(10) NOT NULL,  -- YYYY-MM-DD (Monday)
-  period_end    VARCHAR(10) NOT NULL,  -- YYYY-MM-DD (Sunday)
-  hours         DOUBLE NOT NULL DEFAULT 0,
-  regular_hours DOUBLE NOT NULL DEFAULT 0,
-  ot_hours      DOUBLE NOT NULL DEFAULT 0,
-  ot_multiplier DOUBLE NOT NULL DEFAULT 1,
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id       BIGINT UNSIGNED NOT NULL,
+  period_start  DATE NOT NULL COMMENT 'Monday',
+  period_end    DATE NOT NULL COMMENT 'Sunday',
+  hours         DECIMAL(8,2) NOT NULL DEFAULT 0,
+  regular_hours DECIMAL(8,2) NOT NULL DEFAULT 0,
+  ot_hours      DECIMAL(8,2) NOT NULL DEFAULT 0,
+  ot_multiplier DECIMAL(4,2) NOT NULL DEFAULT 1,
   days          INT NOT NULL DEFAULT 0,
-  gross         INT NOT NULL DEFAULT 0,  -- cents
+  gross         DECIMAL(12,2) NOT NULL DEFAULT 0,
   pay_type      VARCHAR(24) NOT NULL DEFAULT 'hora',
-  pay_rate      INT NOT NULL DEFAULT 0,  -- cents
-  paid_date     VARCHAR(10) NOT NULL,
-  method        VARCHAR(40) NOT NULL DEFAULT 'Check',
+  pay_rate      DECIMAL(12,2) NOT NULL DEFAULT 0,
+  paid_date     DATE NOT NULL,
+  method        VARCHAR(40) NOT NULL DEFAULT 'Check' COMMENT 'Check, Direct deposit, Cash, Other',
   reference     VARCHAR(120) NOT NULL DEFAULT '',
   notes         VARCHAR(255) NOT NULL DEFAULT '',
-  created_by    INT NOT NULL DEFAULT 0,
-  created_at    BIGINT NOT NULL,  -- ms epoch
+  created_by    BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_payouts_company (company_id),
-  KEY idx_payouts_employee (employee_id, period_start)
+  UNIQUE KEY uq_payout_period (user_id, period_start, period_end, pay_type, pay_rate),
+  CONSTRAINT fk_payout_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- In-app notifications (one row per recipient employee). dedupe_key makes
--- the lazy generators (no-show, overdue, pending approvals) idempotent.
-CREATE TABLE notifications (
-  id         INT NOT NULL AUTO_INCREMENT,
-  company_id VARCHAR(64) NOT NULL,
-  user_id    INT NOT NULL,  -- recipient employee id
-  type       VARCHAR(32) NOT NULL,
-  title      VARCHAR(255) NOT NULL,
-  detail     TEXT NOT NULL,
-  payload    TEXT NOT NULL,  -- JSON for client-side localization
-  link_view  VARCHAR(24) NOT NULL DEFAULT '',
-  link_id    INT NULL,
-  read_at    BIGINT NULL,  -- ms epoch
-  dedupe_key VARCHAR(191) NOT NULL DEFAULT '',
-  created_at BIGINT NOT NULL,
+-- ---- Task work time (timer segments + manual hour logs) -----------------------
+CREATE TABLE task_time_logs (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  task_id    BIGINT UNSIGNED NOT NULL,
+  user_id    BIGINT UNSIGNED NOT NULL,
+  kind       ENUM('timer','manual') NOT NULL DEFAULT 'timer',
+  started_at DATETIME NULL,
+  ended_at   DATETIME NULL COMMENT 'NULL while the timer is running',
+  minutes    DECIMAL(10,2) NOT NULL DEFAULT 0,
+  note       VARCHAR(255) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_notifications_user (user_id, read_at),
-  KEY idx_notifications_company (company_id)
-) ENGINE=InnoDB;
-
--- ---------------------------------------------------------------------------
--- Fleet / vehicles
--- ---------------------------------------------------------------------------
-
--- One row per vehicle. photo_url is an inline data URL ('' = none).
--- mileage is the current odometer in miles.
-CREATE TABLE vehicles (
-  id                 INT NOT NULL AUTO_INCREMENT,
-  company_id         VARCHAR(64) NOT NULL,
-  name               VARCHAR(120) NOT NULL,  -- unit name/number, e.g. "Truck 3"
-  make               VARCHAR(80) NOT NULL DEFAULT '',
-  model              VARCHAR(80) NOT NULL DEFAULT '',
-  year               INT NOT NULL DEFAULT 0,
-  plate              VARCHAR(20) NOT NULL DEFAULT '',
-  vin                VARCHAR(32) NOT NULL DEFAULT '',
-  photo_url          LONGTEXT NOT NULL,
-  status             ENUM('active','in_shop','inactive') NOT NULL DEFAULT 'active',
-  mileage            INT NOT NULL DEFAULT 0,  -- current odometer, miles
-  oil_interval_miles INT NOT NULL DEFAULT 5000,
-  oil_interval_months INT NOT NULL DEFAULT 6,
-  last_oil_mileage   INT NULL,
-  last_oil_date      VARCHAR(10) NOT NULL DEFAULT '',  -- YYYY-MM-DD
-  created_at         BIGINT NOT NULL,  -- ms epoch
-  PRIMARY KEY (id),
-  KEY idx_vehicles_company (company_id)
-) ENGINE=InnoDB;
-
--- Who has (or had) a vehicle. unassigned_at NULL = currently using it,
--- so the full usage history per vehicle/day is preserved.
-CREATE TABLE vehicle_assignments (
-  id            INT NOT NULL AUTO_INCREMENT,
-  company_id    VARCHAR(64) NOT NULL,
-  vehicle_id    INT NOT NULL,
-  employee_id   INT NOT NULL,
-  assigned_at   BIGINT NOT NULL,  -- ms epoch
-  unassigned_at BIGINT NULL,
-  PRIMARY KEY (id),
-  KEY idx_vehicle_assignments_vehicle (vehicle_id, unassigned_at),
-  KEY idx_vehicle_assignments_employee (employee_id)
-) ENGINE=InnoDB;
-
-CREATE TABLE vehicle_mileage_logs (
-  id         INT NOT NULL AUTO_INCREMENT,
-  company_id VARCHAR(64) NOT NULL,
-  vehicle_id INT NOT NULL,
-  log_date   VARCHAR(10) NOT NULL,  -- YYYY-MM-DD
-  odometer   INT NOT NULL DEFAULT 0,  -- miles
-  notes      VARCHAR(255) NOT NULL DEFAULT '',
-  created_at BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_mileage_vehicle (vehicle_id, log_date)
-) ENGINE=InnoDB;
-
--- Fuel fills. MPG for a fill = miles since previous fill / gallons.
-CREATE TABLE vehicle_fuel_logs (
-  id         INT NOT NULL AUTO_INCREMENT,
-  company_id VARCHAR(64) NOT NULL,
-  vehicle_id INT NOT NULL,
-  log_date   VARCHAR(10) NOT NULL,
-  gallons    DOUBLE NOT NULL DEFAULT 0,
-  amount     INT NOT NULL DEFAULT 0,  -- cents
-  odometer   INT NOT NULL DEFAULT 0,  -- miles at fill
-  project_id INT NULL,  -- optional cost link to a project
-  notes      VARCHAR(255) NOT NULL DEFAULT '',
-  created_at BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_fuel_vehicle (vehicle_id, log_date)
-) ENGINE=InnoDB;
-
--- Maintenance / shop work. Oil changes feed the oil-due alerts.
-CREATE TABLE vehicle_maintenance (
-  id           INT NOT NULL AUTO_INCREMENT,
-  company_id   VARCHAR(64) NOT NULL,
-  vehicle_id   INT NOT NULL,
-  maint_date   VARCHAR(10) NOT NULL,
-  type         ENUM('oil_change','tires','brakes','inspection','other') NOT NULL DEFAULT 'other',
-  cost         INT NOT NULL DEFAULT 0,  -- cents
-  vendor       VARCHAR(191) NOT NULL DEFAULT '',
-  odometer     INT NOT NULL DEFAULT 0,  -- miles
-  notes        VARCHAR(255) NOT NULL DEFAULT '',
-  receipt_note TEXT NOT NULL,
-  project_id   INT NULL,
-  created_at   BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_maintenance_vehicle (vehicle_id, maint_date)
-) ENGINE=InnoDB;
-
--- Tickets / fines. employee_id snapshots who was responsible (had the
--- vehicle) when the ticket was recorded.
-CREATE TABLE vehicle_tickets (
-  id          INT NOT NULL AUTO_INCREMENT,
-  company_id  VARCHAR(64) NOT NULL,
-  vehicle_id  INT NOT NULL,
-  ticket_date VARCHAR(10) NOT NULL,
-  description TEXT NOT NULL,
-  amount      INT NOT NULL DEFAULT 0,  -- cents
-  status      ENUM('open','paid','disputed') NOT NULL DEFAULT 'open',
-  employee_id INT NULL,
-  notes       VARCHAR(255) NOT NULL DEFAULT '',
-  created_at  BIGINT NOT NULL,
-  PRIMARY KEY (id),
-  KEY idx_tickets_vehicle (vehicle_id, ticket_date)
-) ENGINE=InnoDB;
-
--- Legacy scaffold table, kept for migration parity with the pilot.
-CREATE TABLE entries (
-  id         INT NOT NULL AUTO_INCREMENT,
-  text       TEXT NOT NULL,
-  created_at BIGINT NOT NULL,  -- ms epoch
-  PRIMARY KEY (id)
+  KEY idx_ttl_task (task_id),
+  KEY idx_ttl_user (user_id),
+  CONSTRAINT fk_ttl_task FOREIGN KEY (task_id) REFERENCES job_tasks (id) ON DELETE CASCADE,
+  CONSTRAINT fk_ttl_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;

@@ -4622,7 +4622,7 @@ export const Actions = {
           totalPaidCents,
           lastPaymentDate: pays.length > 0 ? pays[0]!.paidDate : null,
         });
-        totalWeeklyCents += c.weeklyFeeCents ?? 0;
+        totalWeeklyCents += (c.weeklyFeeCents ?? 0) * billable;
       }
       return { builders, totalWeeklyCents };
     },

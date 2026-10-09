@@ -6667,13 +6667,14 @@ function SubscriptionPanel({ ownerEmail }: { ownerEmail: string }) {
                 <div className="text-right">
                   {editingFee === b.companyId ? (
                     <div className="flex items-center gap-1">
-                      <input aria-label={tr("Weekly fee in dollars", "Valor semanal em dólares", "Valor semanal en dólares")} className={inputCls} inputMode="decimal" value={feeValue} onChange={(e) => setFeeValue(e.target.value)} placeholder="0.00" style={{ width: 90 }} />
+                      <input aria-label={tr("Weekly fee per user in dollars", "Valor semanal por usuário em dólares", "Valor semanal por usuario en dólares")} className={inputCls} inputMode="decimal" value={feeValue} onChange={(e) => setFeeValue(e.target.value)} placeholder="0.00" style={{ width: 90 }} />
                       <button type="button" className={btnNavy} disabled={setFee.isPending} onClick={() => setFee.mutate({ companyId: b.companyId, weeklyFeeCents: Math.round(parseFloat(feeValue.replace(",", ".")) * 100) || 0 })}>{tr("Save", "Salvar", "Guardar")}</button>
                       <button type="button" className={btnGhost} onClick={() => setEditingFee(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
                     </div>
                   ) : (
                     <div>
-                      <p className="font-bold">{fmtUSD(b.weeklyFeeCents)}<span className="text-xs font-normal text-[var(--dim)]">/{tr("week", "semana", "semana")}</span></p>
+                      <p className="font-bold">{fmtUSD(b.weeklyFeeCents)}<span className="text-xs font-normal text-[var(--dim)]\">/{tr("user/week", "usuário/semana", "usuario/semana")}</span></p>
+                      <p className="text-sm font-semibold text-green-700">= {fmtUSD(b.weeklyFeeCents * b.billableUsers)}<span className="text-xs font-normal text-[var(--dim)]">/{tr("week", "semana", "semana")}</span></p>
                       <button type="button" className="text-xs font-bold text-[#f97316]" onClick={() => { setEditingFee(b.companyId); setFeeValue((b.weeklyFeeCents / 100).toFixed(2)); }}>{tr("Edit fee", "Editar valor", "Editar valor")}</button>
                     </div>
                   )}

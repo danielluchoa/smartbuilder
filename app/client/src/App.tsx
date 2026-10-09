@@ -6561,7 +6561,7 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
           </button>
 
           <h3 className="mt-5 text-sm font-bold uppercase tracking-wide text-[var(--dim)]">{tr("Export tenant database", "Exportar o banco da empresa", "Exportar la base de datos de la empresa")}</h3>
-          <p className="mt-1 text-xs text-[var(--dim)]">{tr("Full dataset per tenant: JSON for inspection/backup, or a MySQL-compatible SQL dump (CREATE TABLE + INSERT statements) for the database-per-tenant migration. Downloading an export also unlocks that tenant's Delete button.", "Conjunto completo por empresa: JSON para inspeção/backup, ou um dump SQL compatível com MySQL (CREATE TABLE + INSERT) para a migração de um banco por empresa. Baixar uma exportação também libera o botão Excluir da empresa.", "Conjunto completo por empresa: JSON para inspección/respaldo, o un volcado SQL compatible con MySQL (CREATE TABLE + INSERT) para la migración de una base por empresa. Descargar una exportación también desbloquea el botón Eliminar de esa empresa.")}</p>
+          <p className="mt-1 text-xs text-[var(--dim)]">{tr("Full dataset per tenant: JSON for inspection/backup. Downloading an export also unlocks that tenant's Delete button.", "Conjunto completo por empresa: JSON para inspeção/backup. Baixar uma exportação também libera o botão Excluir da empresa.", "Conjunto completo por empresa: JSON para inspección/respaldo. Descargar una exportación también desbloquea el botón Eliminar de esa empresa.")}</p>
           <div className="mt-2 space-y-2">
             {(q.data?.tenants ?? []).map((t) => (
               <div key={t.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--surface2)] px-3 py-2.5">
@@ -6572,7 +6572,6 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
                 </span>
                 <span className="flex shrink-0 gap-2">
                   <button aria-label={tr(`Download JSON export for ${t.name}`, `Baixar a exportação JSON de ${t.name}`, `Descargar la exportación JSON de ${t.name}`)} disabled={exportMut.isPending} onClick={() => doExport(t, "json")} className="rounded-lg bg-[#0f2a44] px-3 py-1.5 text-xs font-bold text-white active:opacity-80 disabled:opacity-40">JSON</button>
-                  <button aria-label={tr(`Download MySQL SQL export for ${t.name}`, `Baixar a exportação SQL MySQL de ${t.name}`, `Descargar la exportación SQL MySQL de ${t.name}`)} disabled={exportMut.isPending} onClick={() => doExport(t, "sql")} className="rounded-lg bg-[#f97316] px-3 py-1.5 text-xs font-bold text-white active:opacity-80 disabled:opacity-40">MySQL SQL</button>
                 </span>
               </div>
             ))}

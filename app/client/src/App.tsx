@@ -4018,6 +4018,17 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
 
   return (
     <div className="space-y-4">
+      {/* Sequential steps: 1. Clock in → 2. Do tasks → 3. Send progress → 4. Clock out */}
+      <div className="rounded-2xl bg-[#0f2a44] p-4 text-white" aria-label={tr("Your steps today", "Seus passos de hoje", "Tus pasos de hoy")}>
+        <p className="text-xs font-black uppercase tracking-wide text-orange-300">{tr("Your steps today", "Seus passos de hoje", "Tus pasos de hoy")}</p>
+        <div className="mt-2 space-y-1.5 text-sm">
+          <p className={sheet ? "text-white/50" : "font-bold text-white"}>{sheet ? "✅" : "👉"} <span className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#f97316] text-[11px] font-black text-white">1</span> {tr("Clock in", "Bater o ponto (entrada)", "Registrar entrada")}</p>
+          <p className={!sheet ? "text-white/50" : "font-bold text-white"}>{sheet ? "👉" : "2"} <span className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[11px] font-black text-white">2</span> {tr("Do your tasks below", "Fazer suas tarefas abaixo", "Hacer tus tareas abajo")}</p>
+          <p className="text-white/50"><span className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[11px] font-black text-white">3</span> {tr("Send progress photos", "Enviar fotos do progresso", "Enviar fotos del progreso")}</p>
+          <p className={sheet ? "font-bold text-white" : "text-white/50"}>{sheet ? "👉" : ""} <span className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[11px] font-black text-white">4</span> {tr("Clock out at the end", "Bater o ponto (saída) no fim", "Registrar salida al final")}</p>
+        </div>
+      </div>
+
       <h2 className="text-xl font-bold">{tr("Field — clock in & progress", "Campo — registro de ponto e progresso", "Campo: registro de entrada y progreso")}</h2>
       <p className="text-sm text-[var(--dim)]">{tr("Hi,", "Olá,", "Hola,")} {session.userName.split(" ")[0]}. {sheet ? tr("You are on the clock right now.", "Você está com o ponto registrado agora.", "Tienes tu registro de entrada activo ahora.") : tr("Your job site today comes from your assignment.", "Sua obra de hoje vem da sua atribuição.", "Tu obra de hoy viene de tu asignación.")}</p>
 
@@ -4122,7 +4133,8 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
               <p className="mt-2 text-xs text-[var(--dim)]">ℹ️ {tr("With the app closed or the phone locked, the web app cannot send your location (the system suspends the page). That's also why your shift", "Com o app fechado ou o celular bloqueado, o app web não consegue enviar sua localização (o sistema suspende a página). É também por isso que seu turno", "Con la app cerrada o el teléfono bloqueado, la app web no puede enviar tu ubicación (el sistema suspende la página). Por eso también tu turno")} <strong>{tr("auto-closes at the end of the workday", "é fechado automaticamente no fim do expediente", "se cierra automáticamente al final de la jornada")}</strong> — {tr("you never stay “clocked in” while not working.", "você nunca fica “com o ponto aberto” enquanto não está trabalhando.", "nunca quedas “con el registro activo” mientras no estás trabajando.")}</p>
             </div>
 
-            <button aria-label={tr("Check out", "Registrar saída", "Registrar salida")} disabled={checkOut.isPending} onClick={() => checkOut.mutate()} className="mt-3 w-full rounded-2xl bg-red-600 py-5 text-lg font-black text-white active:opacity-80 disabled:opacity-40">
+            <p className="mt-3 text-center text-sm font-black uppercase tracking-wide text-red-600">{tr("Step 4 — Clock out", "Passo 4 — Bater o ponto (saída)", "Paso 4 — Registrar salida")}</p>
+            <button aria-label={tr("Check out", "Registrar saída", "Registrar salida")} disabled={checkOut.isPending} onClick={() => checkOut.mutate()} className="mt-2 w-full rounded-2xl bg-red-600 py-5 text-lg font-black text-white active:opacity-80 disabled:opacity-40">
               {checkOut.isPending ? tr("Recording…", "Registrando…", "Registrando…") : tr("✓ CHECK OUT", "✓ REGISTRAR SAÍDA", "✓ REGISTRAR SALIDA")}
             </button>
             {queuedCheckOut && <p className="mt-2 rounded-xl bg-amber-100 px-3 py-2 text-center text-xs font-bold text-amber-900" role="status">{tr("📥 A check-out is queued and will send when you're back online.", "📥 Um check-out está na fila e será enviado quando você voltar a ficar online.", "📥 Un registro de salida está en cola y se enviará cuando vuelvas a conectarte.")}</p>}
@@ -4151,9 +4163,12 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
                 {tr("📥 Check-in queued — you're offline. It will send by itself when the connection comes back; your shift starts counting from when it syncs.", "📥 Check-in na fila — você está offline. Ele será enviado sozinho quando a conexão voltar; seu turno começa a contar a partir da sincronização.", "📥 Registro de entrada en cola: estás sin conexión. Se enviará solo cuando vuelva la conexión; tu turno empieza a contar desde la sincronización.")}
               </p>
             ) : (
-              <button aria-label={tr("Check in at the job site", "Registrar entrada na obra", "Registrar entrada en la obra")} disabled={!effectiveProjectId || checkIn.isPending} onClick={() => checkIn.mutate({ projId: effectiveProjectId, jobToUse: selectedJobId })} className="mt-4 w-full rounded-2xl bg-[#f97316] py-5 text-lg font-black text-white active:opacity-80 disabled:opacity-40">
+              <>
+              <p className="mt-4 text-center text-sm font-black uppercase tracking-wide text-[#f97316]">{tr("Step 1 — Clock in", "Passo 1 — Bater o ponto", "Paso 1 — Registrar entrada")}</p>
+              <button aria-label={tr("Check in at the job site", "Registrar entrada na obra", "Registrar entrada en la obra")} disabled={!effectiveProjectId || checkIn.isPending} onClick={() => checkIn.mutate({ projId: effectiveProjectId, jobToUse: selectedJobId })} className="mt-2 w-full rounded-2xl bg-[#f97316] py-5 text-lg font-black text-white active:opacity-80 disabled:opacity-40">
                 {checkIn.isPending ? tr("Getting location…", "Obtendo a localização…", "Obteniendo la ubicación…") : tr("📍 CHECK IN WITH GPS", "📍 REGISTRAR ENTRADA COM GPS", "📍 REGISTRAR ENTRADA CON GPS")}
               </button>
+              </>
             )}
           </>
         )}
@@ -4163,7 +4178,7 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
       {/* My tasks — the crew works this checklist in any order */}
       <section className="rounded-2xl border-2 border-[#f97316] bg-[var(--surface)] p-4" aria-label={tr("My tasks", "Minhas tarefas", "Mis tareas")}>
         <div className="flex items-center justify-between gap-2">
-          <h3 className="font-bold">{tr("✅ My tasks", "✅ Minhas tarefas", "✅ Mis tareas")}</h3>
+          <h3 className="font-bold"><span className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#f97316] text-[11px] font-black text-white">2</span> {tr("My tasks — what to do", "Minhas tarefas — o que fazer", "Mis tareas — qué hacer")}</h3>
           {myTaskList.length > 0 && <span className="text-xs font-semibold text-[var(--dim)]">{myDoneCount}/{myTaskList.length} {tr("done", "concluídas", "terminadas")}</span>}
         </div>
         <p className="mt-0.5 text-xs text-[var(--dim)]">{tr("Start whichever task you want — tap", "Comece a tarefa que quiser — toque em", "Empieza la tarea que quieras: toca")} <strong>{tr("Start", "Início", "Inicio")}</strong>{tr(", work on it (it can take more than a day; it stays In Progress until you tap", ", trabalhe nela (pode levar mais de um dia; ela fica Em andamento até você tocar em", ", trabaja en ella (puede llevar más de un día; queda En curso hasta que toques")} <strong>{tr("Done", "Concluída", "Terminada")}</strong>{tr("), and add a photo when you can: Before, During, or After.", ") e adicione uma foto quando puder: Antes, Durante ou Depois.", ") y agrega una foto cuando puedas: Antes, Durante o Después.")}</p>
@@ -4209,7 +4224,7 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
       )}
 
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h3 className="font-bold">{tr("Send a progress photo / note", "Enviar foto / observação de progresso", "Enviar foto / nota de progreso")}</h3>
+        <h3 className="font-bold"><span className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#f97316] text-[11px] font-black text-white">3</span> {tr("Send a progress photo / note", "Enviar foto / observação de progresso", "Enviar foto / nota de progreso")}</h3>
         <div className="mt-3 space-y-3">
           <Field label={tr("Project (if different from the check-in)", "Obra (se for diferente do check-in)", "Obra (si es distinta a la del registro)")}>
             <select aria-label={tr("Project for this update", "Obra para esta atualização", "Obra para esta actualización")} className={inputCls} value={projectId} onChange={(e) => setProjectId(e.target.value)}>

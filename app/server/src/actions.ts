@@ -745,18 +745,46 @@ async function ensureStarterServiceTypes(db: CtxDb): Promise<void> {
     const comps = await db.select().from(schema.companies);
     for (const c of comps) {
       const existing = await db.select().from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, c.id));
-      if (existing.length === 0) {
-        for (let ti = 0; ti < STARTER_SERVICE_TYPES.length; ti++) {
-          const st = STARTER_SERVICE_TYPES[ti];
+      const existingByName = new Map(existing.map((t) => [t.name.toLowerCase(), t]));
+      for (let ti = 0; ti < STARTER_SERVICE_TYPES.length; ti++) {
+        const st = STARTER_SERVICE_TYPES[ti];
+        // Handle legacy "Hardwood Floors" -> rename to "Hardwood Flooring"
+        let typeRow = existingByName.get(st.name.toLowerCase());
+        if (!typeRow && st.name === "Hardwood Flooring") {
+          typeRow = existingByName.get("hardwood floors");
+          if (typeRow) {
+            await db.update(schema.serviceTypes).set({ name: st.name }).where(eq(schema.serviceTypes.id, typeRow.id));
+            typeRow = { ...typeRow, name: st.name };
+          }
+        }
+        let typeId: number;
+        if (!typeRow) {
+          const maxOrder = existing.reduce((m, t) => Math.max(m, t.sortOrder), 0);
           const inserted = await db.insert(schema.serviceTypes).values({
-            companyId: c.id, name: st.name, sortOrder: ti + 1, createdAt: new Date(),
+            companyId: c.id, name: st.name, sortOrder: maxOrder + 1, createdAt: new Date(),
           });
-          const typeId = Number((inserted as unknown as { insertId: number }).insertId);
-          for (let pi = 0; pi < st.phases.length; pi++) {
+          typeId = Number((inserted as unknown as { insertId: number }).insertId);
+          existing.push({ id: typeId, companyId: c.id, name: st.name, sortOrder: maxOrder + 1, createdAt: new Date() } as typeof existing[0]);
+        } else {
+          typeId = typeRow.id;
+        }
+        // Add missing phases
+        const existingPhases = await db.select().from(schema.servicePhases).where(eq(schema.servicePhases.typeId, typeId));
+        const existingPhaseNames = new Set(existingPhases.map((p) => p.name.toLowerCase()));
+        for (let pi = 0; pi < st.phases.length; pi++) {
+          const phase = st.phases[pi];
+          if (!existingPhaseNames.has(phase.name.toLowerCase())) {
+            const maxPhase = existingPhases.reduce((m, p) => Math.max(m, p.phaseNumber), 0);
             await db.insert(schema.servicePhases).values({
-              typeId, phaseNumber: pi + 1, name: st.phases[pi].name,
-              description: st.phases[pi].desc, createdAt: new Date(),
+              typeId, phaseNumber: maxPhase + 1, name: phase.name,
+              description: phase.desc, createdAt: new Date(),
             });
+          } else {
+            // Update description if missing
+            const ep = existingPhases.find((p) => p.name.toLowerCase() === phase.name.toLowerCase());
+            if (ep && !ep.description && phase.desc) {
+              await db.update(schema.servicePhases).set({ description: phase.desc }).where(eq(schema.servicePhases.id, ep.id));
+            }
           }
         }
       }

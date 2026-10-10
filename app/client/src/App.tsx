@@ -5,6 +5,8 @@ import { GeoMap } from "./GeoMap";
 import { makeStyledInvoicePdf } from "./invoicePdf";
 import { enqueueOutbox, isOffline, setOutboxSyncedHandler, startOutboxAutoSync, syncOutbox, useOnline, useOutboxItems } from "./offline";
 import { LanguageContext, LanguageToggle, langDocValue, setCurrentLang, tr, useLanguage, type Lang } from "./i18n";
+import logoBadge from "./assets/logo-badge.png";
+import logoFull from "./assets/logo-full.png";
 
 /* Download a text file the app generated (exports, schema). */
 function downloadTextFile(filename: string, content: string, mime: string) {
@@ -1707,9 +1709,8 @@ export function App() {
         <div className="mx-auto max-w-md">
           <div className="mb-3 flex items-start justify-between gap-2">
             <div className="flex items-center gap-2">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#f97316] text-xl font-black text-white">SB</div>
+              <img src={logoFull} alt="SmartBuilder logo" className="h-16 w-auto rounded-xl bg-white px-3 py-1.5 object-contain" />
               <div>
-                <h1 className="text-2xl font-black text-white">SmartBuilder</h1>
                 <p className="text-xs text-white/60">{tr("Construction management • Pilot", "Gestão de construção • Piloto", "Gestión de construcción • Piloto")}</p>
               </div>
             </div>
@@ -1836,7 +1837,7 @@ export function App() {
       <header className="sticky top-0 z-20 bg-[#0f2a44] px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] text-white shadow">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f97316] text-sm font-black">SB</div>
+            <img src={logoBadge} alt="SmartBuilder" className="h-9 w-9 shrink-0 rounded-lg bg-white object-contain" />
             <div className="min-w-0">
               <p className="truncate text-sm font-bold leading-tight">{session.companyName}</p>
               <p className="truncate text-xs text-white/60">{session.userName} • {roleLabel(session.role)}</p>
@@ -6027,7 +6028,7 @@ function ClientPortal({ session, onSignOut }: { session: Session; onSignOut: () 
       <header className="sticky top-0 z-20 bg-[#0f2a44] px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] text-white shadow">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f97316] text-sm font-black">SB</div>
+            <img src={logoBadge} alt="SmartBuilder" className="h-9 w-9 shrink-0 rounded-lg bg-white object-contain" />
             <div className="min-w-0">
               <p className="truncate text-sm font-bold leading-tight">{session.companyName}</p>
               <p className="truncate text-xs text-white/60">{session.userName} • {tr("Client portal", "Portal do cliente", "Portal del cliente")} • {tr("View only", "Somente visualização", "Solo lectura")}</p>
@@ -6579,7 +6580,7 @@ function OwnerPanel({ ownerEmail, ownerName, onSignOut }: { ownerEmail: string; 
       <header className="sticky top-0 z-20 bg-[#0f2a44] px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] text-white shadow">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f97316] text-sm font-black">SB</div>
+            <img src={logoBadge} alt="SmartBuilder" className="h-9 w-9 shrink-0 rounded-lg bg-white object-contain" />
             <div className="min-w-0">
               <p className="truncate text-sm font-bold leading-tight">{tr("SmartBuilder — Platform owner", "SmartBuilder — Proprietário da plataforma", "SmartBuilder: propietario de la plataforma")}</p>
               <p className="truncate text-xs text-white/60">{ownerName ? `${ownerName} • ` : ""}{ownerEmail}</p>

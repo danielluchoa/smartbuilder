@@ -777,6 +777,7 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
   const [pickType, setPickType] = useState("");
   const [pickPhase, setPickPhase] = useState("");
   const [useTypePhase, setUseTypePhase] = useState(true);
+  const [isRepair, setIsRepair] = useState(false);
   const [msg, setMsg] = useState("");
   const [editLineId, setEditLineId] = useState<number | null>(null);
   const [editQty, setEditQty] = useState("");
@@ -785,11 +786,11 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
     mutationFn: () => {
       const qty = parseFloat(pickQty.replace(",", ".")) || 0;
       if (useTypePhase) {
-        return api.addProjectServiceFromPhase({ companyId: cid, actorId, projectId, typeId: Number(pickType), phaseId: Number(pickPhase), quantity: qty });
+        return api.addProjectServiceFromPhase({ companyId: cid, actorId, projectId, typeId: Number(pickType), phaseId: Number(pickPhase), quantity: qty, isRepair: isRepair ? 1 : 0 });
       }
       return api.addProjectService({ companyId: cid, actorId, projectId, serviceId: Number(pickService), quantity: qty });
     },
-    onSuccess: () => { invalidate(); setPickQty(""); setPickPhase(""); setMsg(tr("Measurement added. The crew can see it now. ✅", "Medição adicionada. A equipe já pode vê-la. ✅", "Medición agregada. El equipo ya puede verla. ✅")); },
+    onSuccess: () => { invalidate(); setPickQty(""); setPickPhase(""); setIsRepair(false); setMsg(tr("Measurement added. The crew can see it now. ✅", "Medição adicionada. A equipe já pode vê-la. ✅", "Medición agregada. El equipo ya puede verla. ✅")); },
     onError: () => setMsg(tr("Could not add this measurement. Pick a service and a quantity above zero.", "Não foi possível adicionar esta medição. Escolha um serviço e uma quantidade acima de zero.", "No se pudo agregar esta medición. Elige un servicio y una cantidad mayor que cero.")),
   });
   const addFromPhase = addLine;
@@ -829,9 +830,15 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
                   </select>
                 </Field>
               </div>
-              <Field label={tr("Quantity", "Quantidade", "Cantidad")}>
-                <input aria-label={tr("Quantity needed", "Quantidade necessária", "Cantidad necesaria")} className={inputCls} inputMode="decimal" value={pickQty} onChange={(e) => setPickQty(e.target.value)} placeholder="400" required />
-              </Field>
+              <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                <Field label={tr("Quantity", "Quantidade", "Cantidad")}>
+                  <input aria-label={tr("Quantity needed", "Quantidade necessária", "Cantidad necesaria")} className={inputCls} inputMode="decimal" value={pickQty} onChange={(e) => setPickQty(e.target.value)} placeholder="400" required />
+                </Field>
+                <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm font-semibold cursor-pointer">
+                  <input type="checkbox" checked={isRepair} onChange={(e) => setIsRepair(e.target.checked)} className="h-4 w-4 accent-[#f97316]" />
+                  {tr("Repair", "Reparo", "Reparación")}
+                </label>
+              </div>
               <button type="button" onClick={() => setUseTypePhase(false)} className="text-xs text-[var(--dim)] underline">{tr("Or pick from the classic catalog", "Ou escolha do catálogo clássico", "O elige del catálogo clásico")}</button>
             </>
           ) : (
@@ -864,7 +871,7 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
         {lines.map((l) => (
           <div key={l.id} className="rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-[var(--text)]">
             <div className="flex items-center justify-between gap-2">
-              <p className="min-w-0 font-semibold leading-snug">🧱 {l.serviceName}</p>
+              <p className="min-w-0 font-semibold leading-snug">🧱 {l.serviceName}{l.isRepair === 1 && <span className="ml-2 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">{tr("REPAIR", "REPARO", "REPARACIÓN")}</span>}</p>
               <p className="shrink-0 text-sm font-black">{fmtQty(l.quantity)} {l.unit}</p>
             </div>
             {l.rate > 0 && <p className="mt-0.5 text-[11px] text-[var(--dim)]">{fmtUSD(l.rate)}/{l.unit} • {tr("Est.", "Est.", "Est.")} {fmtUSD(l.lineTotal)}</p>}
@@ -900,10 +907,11 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
   );
 }
 
-/* Service types & phases (admin/manager): a type is a main category
-   (e.g. "Hardwood Floors") with ordered phases inside (e.g. 1. Initial
-   Inspection & Measurements). */
-function ServiceTypesSection({ cid, session }: { cid: string; session: Session }) {
+
+/* Services catalog tab (admin/manager): reusable services with a unit and
+   an optional default rate. Starter services arrive seeded and stay fully
+   editable. */
+function ServicesView({ cid, session }: { cid: string; session: Session }) {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["service-types", cid], queryFn: () => api.listServiceTypes({ companyId: cid }) });
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["service-types", cid] }); };
@@ -911,71 +919,86 @@ function ServiceTypesSection({ cid, session }: { cid: string; session: Session }
   const [newTypeName, setNewTypeName] = useState("");
   const [newPhaseName, setNewPhaseName] = useState("");
   const [newPhaseDesc, setNewPhaseDesc] = useState("");
+  const [activeTypeForPhase, setActiveTypeForPhase] = useState<number | null>(null);
   const [msg, setMsg] = useState("");
   const canManage = session.role !== "funcionario";
 
   const createType = useMutation({
     mutationFn: () => api.createServiceType({ companyId: cid, actorId: session.userId, name: newTypeName }),
-    onSuccess: () => { invalidate(); setNewTypeName(""); setMsg(tr("Service type added. ✅", "Tipo de serviço adicionado. ✅", "Tipo de servicio agregado. ✅")); },
-    onError: () => setMsg(tr("Could not add this type.", "Não foi possível adicionar este tipo.", "No se pudo agregar este tipo.")),
+    onSuccess: () => { invalidate(); setNewTypeName(""); setMsg(tr("Type added. \u2705", "Tipo adicionado. \u2705", "Tipo agregado. \u2705")); },
+    onError: () => setMsg(tr("Could not add this type.", "N\u00e3o foi poss\u00edvel adicionar este tipo.", "No se pudo agregar este tipo.")),
   });
   const createPhase = useMutation({
     mutationFn: (typeId: number) => api.createServicePhase({ companyId: cid, actorId: session.userId, typeId, name: newPhaseName, description: newPhaseDesc || undefined }),
-    onSuccess: () => { invalidate(); setNewPhaseName(""); setNewPhaseDesc(""); setMsg(tr("Phase added. ✅", "Fase adicionada. ✅", "Fase agregada. ✅")); },
-    onError: () => setMsg(tr("Could not add this phase.", "Não foi possível adicionar esta fase.", "No se pudo agregar esta fase.")),
+    onSuccess: () => { invalidate(); setNewPhaseName(""); setNewPhaseDesc(""); setActiveTypeForPhase(null); setMsg(tr("Phase added. \u2705", "Fase adicionada. \u2705", "Fase agregada. \u2705")); },
+    onError: () => setMsg(tr("Could not add this phase.", "N\u00e3o foi poss\u00edvel adicionar esta fase.", "No se pudo agregar esta fase.")),
   });
   const deleteType = useMutation({
     mutationFn: (typeId: number) => api.deleteServiceType({ companyId: cid, actorId: session.userId, typeId }),
-    onSuccess: () => { invalidate(); setExpandedId(null); setMsg(tr("Type and its phases removed.", "Tipo e suas fases removidos.", "Tipo y sus fases eliminados.")); },
-    onError: () => setMsg(tr("Could not remove this type.", "Não foi possível remover este tipo.", "No se pudo eliminar este tipo.")),
+    onSuccess: () => { invalidate(); setExpandedId(null); setMsg(tr("Type removed.", "Tipo removido.", "Tipo eliminado.")); },
+    onError: () => setMsg(tr("Could not remove this type.", "N\u00e3o foi poss\u00edvel remover este tipo.", "No se pudo eliminar este tipo.")),
   });
   const deletePhase = useMutation({
     mutationFn: (phaseId: number) => api.deleteServicePhase({ companyId: cid, actorId: session.userId, phaseId }),
     onSuccess: () => { invalidate(); setMsg(tr("Phase removed.", "Fase removida.", "Fase eliminada.")); },
-    onError: () => setMsg(tr("Could not remove this phase.", "Não foi possível remover esta fase.", "No se pudo eliminar esta fase.")),
+    onError: () => setMsg(tr("Could not remove this phase.", "N\u00e3o foi poss\u00edvel remover esta fase.", "No se pudo eliminar esta fase.")),
   });
 
   const types = q.data?.types ?? [];
   const phases = q.data?.phases ?? [];
 
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-      <h3 className="font-bold">🏷️ {tr("Service types & phases", "Tipos e fases de serviço", "Tipos y fases de servicio")}</h3>
-      <p className="mt-1 text-sm text-[var(--dim)]">{tr("A type groups the phases of a job — e.g. Hardwood Floors with its 8 phases. Tap a type to see its phases.", "Um tipo agrupa as fases de um serviço — ex.: Hardwood Floors com suas 8 fases. Toque num tipo para ver suas fases.", "Un tipo agrupa las fases de un servicio, p. ej., Hardwood Floors con sus 8 fases. Toca un tipo para ver sus fases.")}</p>
-      {msg && <p className="mt-2 text-sm font-semibold" role="status">{msg}</p>}
-      {q.isPending && <p className="mt-2 text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
-      <div className="mt-3 space-y-2">
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-bold">{tr("Services", "Servi\u00e7os", "Servicios")}</h2>
+        <p className="mt-1 text-sm text-[var(--dim)]">{tr("Select a type to see its phases.", "Selecione um tipo para ver suas fases.", "Selecciona un tipo para ver sus fases.")}</p>
+      </div>
+      {msg && <p className="text-sm font-semibold" role="status">{msg}</p>}
+      {q.isPending && <p className="py-8 text-center text-sm text-[var(--dim)]">{tr("Loading services\u2026", "Carregando servi\u00e7os\u2026", "Cargando servicios\u2026")}</p>}
+      {q.error && <p className="py-8 text-center text-sm font-semibold text-red-600">{tr("Could not load services.", "N\u00e3o foi poss\u00edvel carregar os servi\u00e7os.", "No se pudieron cargar los servicios.")} <button className="underline" onClick={() => q.refetch()}>{tr("Retry", "Tentar novamente", "Reintentar")}</button></p>}
+      {!q.isPending && !q.error && types.length === 0 && (
+        <p className="rounded-2xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm text-[var(--dim)]">{tr("No service types yet.", "Nenhum tipo de servi\u00e7o ainda.", "Sin tipos de servicio todav\u00eda.")}</p>
+      )}
+      <div className="space-y-2">
         {types.map((t) => {
           const typePhases = phases.filter((p) => p.typeId === t.id).sort((a, b) => a.phaseNumber - b.phaseNumber);
           const isOpen = expandedId === t.id;
           return (
-            <div key={t.id} className="rounded-xl bg-[var(--surface2)] p-3">
-              <button type="button" onClick={() => setExpandedId(isOpen ? null : t.id)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={isOpen}>
-                <span className="font-bold">{t.name}</span>
-                <span className="text-sm text-[var(--dim)]">{typePhases.length} {tr("phases", "fases", "fases")} {isOpen ? "▾" : "▸"}</span>
+            <div key={t.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+              <button type="button" onClick={() => setExpandedId(isOpen ? null : t.id)} className="flex w-full items-center justify-between gap-2 p-4 text-left" aria-expanded={isOpen}>
+                <span className="text-base font-bold">{t.name}</span>
+                <span className="shrink-0 rounded-full bg-[var(--surface2)] px-3 py-1 text-xs font-bold text-[var(--dim)]">{typePhases.length} {tr("phases", "fases", "fases")} {isOpen ? "\u25be" : "\u25b8"}</span>
               </button>
               {isOpen && (
-                <div className="mt-2 space-y-1 border-t border-[var(--border)] pt-2">
+                <div className="space-y-1 border-t border-[var(--border)] p-3">
                   {typePhases.map((p) => (
-                    <div key={p.id} className="flex items-start justify-between gap-2 rounded-lg bg-[var(--surface)] px-3 py-2">
-                      <div>
+                    <div key={p.id} className="flex items-start justify-between gap-2 rounded-xl bg-[var(--surface2)] px-3 py-2.5">
+                      <div className="min-w-0">
                         <p className="text-sm font-semibold"><span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#f97316] text-xs font-bold text-white">{p.phaseNumber}</span>{p.name}</p>
-                        {p.description && <p className="mt-0.5 text-xs text-[var(--dim)]">{p.description}</p>}
+                        {p.description && <p className="mt-1 text-xs text-[var(--dim)]">{p.description}</p>}
                       </div>
                       {canManage && (
-                        <button type="button" onClick={() => { if (confirm(tr(`Remove phase "${p.name}"?`, `Remover a fase "${p.name}"?`, `¿Eliminar la fase "${p.name}"?`))) deletePhase.mutate(p.id); }} className="shrink-0 text-xs font-bold text-red-600" aria-label={tr(`Remove phase ${p.name}`, `Remover a fase ${p.name}`, `Eliminar la fase ${p.name}`)}>{tr("Remove", "Remover", "Eliminar")}</button>
+                        <button type="button" onClick={() => { if (confirm(tr("Remove this phase?", "Remover esta fase?", "\u00bfEliminar esta fase?"))) deletePhase.mutate(p.id); }} className="shrink-0 text-xs font-bold text-red-600" aria-label={tr("Remove phase", "Remover fase", "Eliminar fase")}>\u2715</button>
                       )}
                     </div>
                   ))}
-                  {typePhases.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No phases yet.", "Nenhuma fase ainda.", "Sin fases todavía.")}</p>}
+                  {typePhases.length === 0 && <p className="py-2 text-center text-sm text-[var(--dim)]">{tr("No phases yet.", "Nenhuma fase ainda.", "Sin fases todav\u00eda.")}</p>}
                   {canManage && (
-                    <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newPhaseName.trim()) createPhase.mutate(t.id); }}>
-                      <input aria-label={tr("New phase name", "Nome da nova fase", "Nombre de la nueva fase")} className={inputCls} value={newPhaseName} onChange={(e) => setNewPhaseName(e.target.value)} placeholder={tr("New phase…", "Nova fase…", "Nueva fase…")} />
-                      <button type="submit" disabled={createPhase.isPending || !newPhaseName.trim()} className={btnPrimary}>{tr("Add", "Adicionar", "Agregar")}</button>
-                    </form>
-                  )}
-                  {canManage && (
-                    <button type="button" onClick={() => { if (confirm(tr(`Remove type "${t.name}" and all its phases?`, `Remover o tipo "${t.name}" e todas as suas fases?`, `¿Eliminar el tipo "${t.name}" y todas sus fases?`))) deleteType.mutate(t.id); }} className="mt-1 text-xs font-bold text-red-600">{tr("Remove type", "Remover tipo", "Eliminar tipo")}</button>
+                    <div className="pt-2">
+                      {activeTypeForPhase === t.id ? (
+                        <form className="space-y-2 rounded-xl bg-[var(--surface)] p-3" onSubmit={(e) => { e.preventDefault(); if (newPhaseName.trim()) createPhase.mutate(t.id); }}>
+                          <input aria-label={tr("Phase name", "Nome da fase", "Nombre de la fase")} className={inputCls} value={newPhaseName} onChange={(e) => setNewPhaseName(e.target.value)} placeholder={tr("Phase name\u2026", "Nome da fase\u2026", "Nombre de la fase\u2026")} required />
+                          <input aria-label={tr("Phase description", "Descri\u00e7\u00e3o da fase", "Descripci\u00f3n de la fase")} className={inputCls} value={newPhaseDesc} onChange={(e) => setNewPhaseDesc(e.target.value)} placeholder={tr("Description (optional)", "Descri\u00e7\u00e3o (opcional)", "Descripci\u00f3n (opcional)")} />
+                          <div className="flex gap-2">
+                            <button type="submit" disabled={createPhase.isPending || !newPhaseName.trim()} className={btnPrimary}>{tr("Add phase", "Adicionar fase", "Agregar fase")}</button>
+                            <button type="button" onClick={() => { setActiveTypeForPhase(null); setNewPhaseName(""); setNewPhaseDesc(""); }} className={btnGhost}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
+                          </div>
+                        </form>
+                      ) : (
+                        <button type="button" onClick={() => setActiveTypeForPhase(t.id)} className="text-sm font-bold text-[#f97316]">+ {tr("Add phase", "Adicionar fase", "Agregar fase")}</button>
+                      )}
+                      <button type="button" onClick={() => { if (confirm(tr(`Remove "${t.name}" and all its phases?`, `Remover "${t.name}" e todas as suas fases?`, `\u00bfEliminar "${t.name}" y todas sus fases?`))) deleteType.mutate(t.id); }} className="mt-2 block text-xs font-bold text-red-600">{tr("Remove type", "Remover tipo", "Eliminar tipo")}</button>
+                    </div>
                   )}
                 </div>
               )}
@@ -984,163 +1007,14 @@ function ServiceTypesSection({ cid, session }: { cid: string; session: Session }
         })}
       </div>
       {canManage && (
-        <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newTypeName.trim()) createType.mutate(); }}>
-          <input aria-label={tr("New service type name", "Nome do novo tipo de serviço", "Nombre del nuevo tipo de servicio")} className={inputCls} value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder={tr("New type… e.g. Hardwood Floors", "Novo tipo… ex.: Hardwood Floors", "Nuevo tipo… ej.: Hardwood Floors")} />
-          <button type="submit" disabled={createType.isPending || !newTypeName.trim()} className={btnPrimary}>{tr("Add type", "Adicionar tipo", "Agregar tipo")}</button>
-        </form>
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <h3 className="font-bold">{tr("Create new service type", "Criar novo tipo de servi\u00e7o", "Crear nuevo tipo de servicio")}</h3>
+          <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newTypeName.trim()) createType.mutate(); }}>
+            <input aria-label={tr("New type name", "Nome do novo tipo", "Nombre del nuevo tipo")} className={inputCls} value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder={tr("E.g. Hardwood Flooring", "Ex.: Hardwood Flooring", "Ej.: Hardwood Flooring")} required />
+            <button type="submit" disabled={createType.isPending || !newTypeName.trim()} className={`${btnPrimary} shrink-0`}>{tr("Add", "Adicionar", "Agregar")}</button>
+          </form>
+        </div>
       )}
-    </div>
-  );
-}
-
-/* Services catalog tab (admin/manager): reusable services with a unit and
-   an optional default rate. Starter services arrive seeded and stay fully
-   editable. */
-function ServicesView({ cid, session }: { cid: string; session: Session }) {
-  const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["services", cid], queryFn: () => api.listServices({ companyId: cid }) });
-  const invalidate = () => { qc.invalidateQueries({ queryKey: ["services", cid] }); };
-  const [name, setName] = useState("");
-  const [unitChoice, setUnitChoice] = useState<string>("sq ft");
-  const [customUnit, setCustomUnit] = useState("");
-  const [rate, setRate] = useState("");
-  const [editId, setEditId] = useState<number | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-  const [msg, setMsg] = useState("");
-  const [formError, setFormError] = useState("");
-  /* Duplicate guard for catalog creates: exact normalized name blocks,
-     near-duplicate (typo-level) asks before creating a second entry. */
-  const [dup, setDup] = useState<{ kind: "exact" | "near"; match: ServiceLite } | null>(null);
-  const [forceCreate, setForceCreate] = useState(false);
-  const effectiveUnit = unitChoice === "__custom" ? customUnit.trim() : unitChoice;
-  const resetForm = () => { setName(""); setUnitChoice("sq ft"); setCustomUnit(""); setRate(""); setEditId(null); setFormError(""); setDup(null); setForceCreate(false); };
-  const save = useMutation({
-    mutationFn: async (): Promise<{ id: number; created: boolean }> => {
-      if (editId !== null) {
-        await api.updateService({ companyId: cid, actorId: session.userId, serviceId: editId, name, unit: effectiveUnit, defaultRate: parseMoney(rate) });
-        return { id: editId, created: false };
-      }
-      const r = await api.createService({ companyId: cid, actorId: session.userId, name, unit: effectiveUnit, defaultRate: parseMoney(rate) });
-      return { id: r.id, created: true };
-    },
-    onSuccess: (r) => { invalidate(); resetForm(); setMsg(r.created ? tr("Service added to the catalog. ✅", "Serviço adicionado ao catálogo. ✅", "Servicio agregado al catálogo. ✅") : tr("Service updated. ✅", "Serviço atualizado. ✅", "Servicio actualizado. ✅")); },
-    onError: (e) => setFormError(e instanceof Error && e.message.includes("already exists")
-      ? tr("This service already exists.", "Este serviço já existe.", "Este servicio ya existe.")
-      : tr("Could not save this service. Only an admin or manager can edit the catalog.", "Não foi possível salvar este serviço. Somente um administrador ou gerente pode editar o catálogo.", "No se pudo guardar este servicio. Solo un administrador o gerente puede editar el catálogo.")),
-  });
-  const del = useMutation({
-    mutationFn: (serviceId: number) => api.deleteService({ companyId: cid, actorId: session.userId, serviceId }),
-    onSuccess: () => { invalidate(); setConfirmDeleteId(null); setMsg(tr("Service removed from the catalog. Measurements already on projects keep their saved name and unit.", "Serviço removido do catálogo. Medições já lançadas nas obras mantêm o nome e a unidade salvos.", "Servicio eliminado del catálogo. Las mediciones ya cargadas en las obras conservan el nombre y la unidad guardados.")); },
-    onError: () => setMsg(tr("Could not remove this service.", "Não foi possível remover este serviço.", "No se pudo eliminar este servicio.")),
-  });
-  const openEdit = (s: ServiceLite) => {
-    setEditId(s.id); setConfirmDeleteId(null); setFormError(""); setMsg(""); setDup(null); setForceCreate(false);
-    setName(s.name);
-    if ((SERVICE_UNIT_PRESETS as readonly string[]).includes(s.unit)) { setUnitChoice(s.unit); setCustomUnit(""); }
-    else { setUnitChoice("__custom"); setCustomUnit(s.unit); }
-    setRate(s.defaultRate > 0 ? moneyInput(s.defaultRate) : "");
-  };
-  const services = q.data?.services ?? [];
-  return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-bold">{tr("Services", "Serviços", "Servicios")}</h2>
-        <p className="mt-1 text-sm text-[var(--dim)]">{tr("Service types with their phases — e.g. Hardwood Flooring with its 8 phases. Pick a type and phase when adding services to a project or creating jobs in Dispatch.", "Tipos de serviço com suas fases — ex.: Hardwood Flooring com suas 8 fases. Escolha um tipo e fase ao adicionar serviços a uma obra ou criar trabalhos no Dispatch.", "Tipos de servicio con sus fases, p. ej., Hardwood Flooring con sus 8 fases. Elige un tipo y fase al agregar servicios a una obra o crear trabajos en Dispatch.")}</p>
-      </div>
-
-      <ServiceTypesSection cid={cid} session={session} />
-
-      <details className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-        <summary className="cursor-pointer text-sm font-bold text-[var(--dim)]">{tr("Classic catalog (legacy)", "Catálogo clássico (legado)", "Catálogo clásico (legado)")}</summary>
-        <div className="mt-3">
-      <form className="space-y-3" onSubmit={(e) => {
-        e.preventDefault();
-        if (editId === null && !forceCreate) {
-          const clash = serviceNameClash(name, q.data?.services ?? []);
-          if (clash) {
-            setDup(clash);
-            setFormError(clash.kind === "exact" ? tr("This service already exists.", "Este serviço já existe.", "Este servicio ya existe.") : "");
-            return;
-          }
-        }
-        setDup(null);
-        save.mutate();
-      }}>
-        <p className="font-bold">{editId !== null ? tr("Edit service", "Editar serviço", "Editar servicio") : tr("New service", "Novo serviço", "Nuevo servicio")}</p>
-        <Field label={tr("Service name", "Nome do serviço", "Nombre del servicio")}>
-          <input aria-label={tr("Service name", "Nome do serviço", "Nombre del servicio")} className={inputCls} value={name} onChange={(e) => { setName(e.target.value); setDup(null); setForceCreate(false); }} placeholder={tr("E.g.: Hardwood floor", "Ex.: Piso de madeira", "Ej.: Piso de madera")} required />
-        </Field>
-        {dup?.kind === "exact" && (
-          <div className="rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/40" role="alert">
-            <p className="text-xs font-bold text-red-700 dark:text-red-300">{tr("This service already exists.", "Este serviço já existe.", "Este servicio ya existe.")}</p>
-            <button type="button" className="mt-1 text-xs font-bold text-[#f97316]" aria-label={tr(`Edit the existing service ${dup.match.name}`, `Editar o serviço existente ${dup.match.name}`, `Editar el servicio existente ${dup.match.name}`)} onClick={() => openEdit(dup.match)}>{tr(`Edit “${dup.match.name}” instead`, `Editar “${dup.match.name}” em vez disso`, `Editar “${dup.match.name}” en su lugar`)}</button>
-          </div>
-        )}
-        {dup?.kind === "near" && (
-          <div className="rounded-lg bg-amber-50 px-3 py-2 dark:bg-amber-950/40" role="alert">
-            <p className="text-xs font-bold text-amber-800 dark:text-amber-200">{tr(`Did you mean “${dup.match.name}”?`, `Você quis dizer “${dup.match.name}”?`, `¿Quisiste decir “${dup.match.name}”?`)}</p>
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              <button type="button" className={btnNavy} aria-label={tr(`Use the existing service ${dup.match.name}`, `Usar o serviço existente ${dup.match.name}`, `Usar el servicio existente ${dup.match.name}`)} onClick={() => openEdit(dup.match)}>{tr("Use existing", "Usar o existente", "Usar el existente")}</button>
-              <button type="button" className={btnGhost} aria-label={tr("Create the new service anyway", "Criar o novo serviço mesmo assim", "Crear el nuevo servicio de todos modos")} disabled={save.isPending} onClick={() => { setForceCreate(true); setDup(null); save.mutate(); }}>{tr("Create new anyway", "Criar novo mesmo assim", "Crear nuevo de todos modos")}</button>
-            </div>
-          </div>
-        )}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={tr("Unit", "Unidade", "Unidad")}>
-            <select aria-label={tr("Service unit", "Unidade do serviço", "Unidad del servicio")} className={inputCls} value={unitChoice} onChange={(e) => setUnitChoice(e.target.value)}>
-              {SERVICE_UNIT_PRESETS.map((u) => <option key={u} value={u}>{unitOptionLabel(u)}</option>)}
-              <option value="__custom">{tr("Custom unit…", "Unidade personalizada…", "Unidad personalizada…")}</option>
-            </select>
-          </Field>
-          <Field label={tr("Default rate (USD per unit, optional)", "Tarifa padrão (USD por unidade, opcional)", "Tarifa predeterminada (USD por unidad, opcional)")}>
-            <input aria-label={tr("Default rate in US dollars per unit", "Tarifa padrão em dólares por unidade", "Tarifa predeterminada en dólares por unidad")} className={inputCls} inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="0.00" />
-          </Field>
-        </div>
-        {unitChoice === "__custom" && (
-          <Field label={tr("Custom unit label", "Rótulo da unidade personalizada", "Etiqueta de la unidad personalizada")}>
-            <input aria-label={tr("Custom unit label", "Rótulo da unidade personalizada", "Etiqueta de la unidad personalizada")} className={inputCls} value={customUnit} onChange={(e) => setCustomUnit(e.target.value)} placeholder={tr("E.g.: per room, lump sum, sheets", "Ex.: por cômodo, empreitada, chapas", "Ej.: por ambiente, tanto alzado, placas")} required />
-          </Field>
-        )}
-        <p className="text-[11px] text-[var(--dim)]">{tr("The default rate is optional. When set, a project measurement (quantity × rate) shows an estimated amount. Leave it at $0 to track quantities only.", "A tarifa padrão é opcional. Quando definida, a medição da obra (quantidade × tarifa) mostra um valor estimado. Deixe em $0 para acompanhar só as quantidades.", "La tarifa predeterminada es opcional. Cuando se define, la medición de la obra (cantidad × tarifa) muestra un importe estimado. Déjala en $0 para controlar solo las cantidades.")}</p>
-        {formError && <p className="text-sm font-semibold text-red-600" role="alert">{formError}</p>}
-        <div className="flex gap-2">
-          {editId !== null && <button type="button" className={btnGhost} onClick={resetForm}>{tr("Cancel", "Cancelar", "Cancelar")}</button>}
-          <button className={`${btnNavy} flex-1`} disabled={save.isPending || !name.trim() || !effectiveUnit}>{save.isPending ? tr("Saving…", "Salvando…", "Guardando…") : editId !== null ? tr("Save changes", "Salvar alterações", "Guardar cambios") : tr("Add service", "Adicionar serviço", "Agregar servicio")}</button>
-        </div>
-      </form>
-      {msg && <p className="text-sm font-semibold" role="status">{msg}</p>}
-
-      {q.isPending && <p className="py-6 text-center text-sm text-[var(--dim)]">{tr("Loading services…", "Carregando serviços…", "Cargando servicios…")}</p>}
-      <div className="space-y-2">
-        {services.map((s) => (
-          <div key={s.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3.5">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="font-bold leading-snug">🧱 {s.name}</p>
-                <p className="mt-0.5 text-xs text-[var(--dim)]">{unitOptionLabel(s.unit)}{s.defaultRate > 0 ? ` • ${fmtUSD(s.defaultRate)} / ${s.unit}` : ` • ${tr("No default rate", "Sem tarifa padrão", "Sin tarifa predeterminada")}`}</p>
-              </div>
-              <span className="flex shrink-0 items-center gap-3">
-                <button type="button" aria-label={tr(`Edit service ${s.name}`, `Editar o serviço ${s.name}`, `Editar el servicio ${s.name}`)} onClick={() => openEdit(s)} className="text-xs font-bold text-[#f97316]">{tr("Edit", "Editar", "Editar")}</button>
-                {confirmDeleteId === s.id ? (
-                  <>
-                    <span className="text-xs font-bold text-red-600" role="alert">{tr("Delete?", "Excluir?", "¿Eliminar?")}</span>
-                    <button type="button" aria-label={tr(`Confirm delete service ${s.name}`, `Confirmar a exclusão do serviço ${s.name}`, `Confirmar la eliminación del servicio ${s.name}`)} disabled={del.isPending} onClick={() => del.mutate(s.id)} className="text-xs font-bold text-red-600">{tr("Delete", "Excluir", "Eliminar")}</button>
-                    <button type="button" aria-label={tr("Cancel delete service", "Cancelar a exclusão do serviço", "Cancelar la eliminación del servicio")} className="text-xs font-bold text-[var(--dim)]" onClick={() => setConfirmDeleteId(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
-                  </>
-                ) : (
-                  <button type="button" aria-label={tr(`Delete service ${s.name}`, `Excluir o serviço ${s.name}`, `Eliminar el servicio ${s.name}`)} className="text-xs font-bold text-red-600" onClick={() => setConfirmDeleteId(s.id)}>{tr("Delete", "Excluir", "Eliminar")}</button>
-                )}
-              </span>
-            </div>
-          </div>
-        ))}
-        {!q.isPending && services.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-6 text-center text-sm text-[var(--dim)]">{tr("No services yet. Add the first one above — e.g. Hardwood floor, sq ft.", "Nenhum serviço ainda. Adicione o primeiro acima — ex.: Piso de madeira, sq ft.", "Todavía no hay servicios. Agrega el primero arriba, p. ej., Piso de madera, sq ft.")}</p>
-        )}
-      </div>
-      <p className="text-[11px] text-[var(--dim)]">{tr("Starter services (Hardwood floor, Tile, Painting, Drywall, Roofing) come pre-loaded with no rates — edit them freely or delete the ones you don't use.", "Os serviços iniciais (Piso de madeira, Azulejo, Pintura, Drywall, Telhado) vêm pré-carregados sem tarifas — edite à vontade ou exclua os que não usar.", "Los servicios iniciales (Piso de madera, Azulejo, Pintura, Drywall, Techo) vienen precargados sin tarifas: edítalos libremente o elimina los que no uses.")}</p>
-        </div>
-      </details>
     </div>
   );
 }
@@ -2584,7 +2458,7 @@ function JobDetailView({ cid, projectId, projectName, job, employees, canManage,
       {canManage && editing && (
         <form className="mt-2 space-y-2 rounded-lg bg-[var(--surface)] p-3" onSubmit={(e) => { e.preventDefault(); if (fPick.name.trim()) saveJob.mutate(); }}>
           <JobServicePicker cid={cid} actorId={actorId} value={fPick} onChange={setFPick} />
-          <Field label={tr("Scope — what to do", "Escopo — o que fazer", "Alcance: qué hacer")}><textarea aria-label={tr("Job scope of work", "Escopo do trabalho", "Alcance del trabajo")} className={inputCls} rows={4} value={fScope} onChange={(e) => setFScope(e.target.value)} placeholder={tr("Describe exactly what this crew needs to do…", "Descreva exatamente o que esta equipe precisa fazer…", "Describe exactamente lo que este equipo debe hacer…")} /></Field>
+          <Field label={tr("Observations", "Observa\u00e7\u00f5es", "Observaciones")}><textarea aria-label={tr("Job scope of work", "Escopo do trabalho", "Alcance del trabajo")} className={inputCls} rows={4} value={fScope} onChange={(e) => setFScope(e.target.value)} placeholder={tr("Describe exactly what this crew needs to do…", "Descreva exatamente o que esta equipe precisa fazer…", "Describe exactamente lo que este equipo debe hacer…")} /></Field>
           <div className="grid grid-cols-3 gap-2">
             <Field label={tr("Status", "Status", "Estado")}>
               <select aria-label={tr("Job status", "Status do trabalho", "Estado del trabajo")} className={inputCls} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
@@ -2758,12 +2632,10 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
       <div className="print:hidden">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")}</h2>
-          <div className="flex gap-2">
-            <button type="button" className={btnPrimary} onClick={() => { setShowCreateJob((s) => !s); setCjMsg(""); }} aria-expanded={showCreateJob}>{showCreateJob ? tr("Close", "Fechar", "Cerrar") : tr("+ Create job", "+ Criar trabalho", "+ Crear trabajo")}</button>
-            <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
-          </div>
+          <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
         </div>
-        <p className="text-sm text-[var(--dim)]">{tr("Work distribution — who does what, on every project, at a glance.", "Distribuição de trabalhos — quem faz o quê, em cada obra, de relance.", "Distribución de trabajos: quién hace qué, en cada obra, de un vistazo.")}</p>
+        <button type="button" className={`${btnPrimary} mt-3 w-full`} onClick={() => { setShowCreateJob((s) => !s); setCjMsg(""); }} aria-expanded={showCreateJob}>{showCreateJob ? tr("Close", "Fechar", "Cerrar") : tr("+ Create job", "+ Criar trabalho", "+ Crear trabajo")}</button>
+        <p className="mt-2 text-sm text-[var(--dim)]">{tr("Work distribution — who does what, on every project, at a glance.", "Distribuição de trabalhos — quem faz o quê, em cada obra, de relance.", "Distribución de trabajos: quién hace qué, en cada obra, de un vistazo.")}</p>
         <p className="mt-2 rounded-xl bg-[#0f2a44] px-3 py-2 text-sm font-bold text-white">{tr("Jobs have crews. Tasks have assignees.", "Trabalhos têm equipes. Tarefas têm responsáveis.", "Los trabajos tienen equipos. Las tareas tienen responsables.")}</p>
         {showCreateJob && (
           <form className="mt-3 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e) => { e.preventDefault(); createJobFromPhase.mutate(); }}>
@@ -3987,7 +3859,7 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
                 💡 {tr("Suggested estimate:", "Estimativa sugerida:", "Estimación sugerida:")} {fmtUSD(estSuggestion)} <span className="font-semibold opacity-80">({fmtQty(pickedLine.quantity)} {pickedSvc.unit} × {fmtUSD(pickedSvc.defaultRate)}/{pickedSvc.unit}) — {tr("tap to use", "toque para usar", "toca para usar")}</span>
               </button>
             )}
-            <Field label={tr("Scope — what to do", "Escopo — o que fazer", "Alcance: qué hacer")}><textarea aria-label={tr("New job scope of work", "Escopo do novo trabalho", "Alcance del nuevo trabajo")} className={inputCls} rows={4} value={jobScope} onChange={(e) => setJobScope(e.target.value)} placeholder={tr("Describe exactly what this crew needs to do…", "Descreva exatamente o que esta equipe precisa fazer…", "Describe exactamente lo que este equipo debe hacer…")} /></Field>
+            <Field label={tr("Observations", "Observa\u00e7\u00f5es", "Observaciones")}><textarea aria-label={tr("New job scope of work", "Escopo do novo trabalho", "Alcance del nuevo trabajo")} className={inputCls} rows={4} value={jobScope} onChange={(e) => setJobScope(e.target.value)} placeholder={tr("Describe exactly what this crew needs to do…", "Descreva exatamente o que esta equipe precisa fazer…", "Describe exactamente lo que este equipo debe hacer…")} /></Field>
             <div className="grid grid-cols-3 gap-2">
               <Field label={tr("Status", "Status", "Estado")}>
                 <select aria-label={tr("New job status", "Status do novo trabalho", "Estado del nuevo trabajo")} className={inputCls} value={jobStatus} onChange={(e) => setJobStatus(e.target.value)}>

@@ -389,6 +389,7 @@ CREATE TABLE project_services (
   unit         VARCHAR(40) NOT NULL DEFAULT 'sq ft',
   quantity     DOUBLE NOT NULL DEFAULT 0,
   rate         INT NOT NULL DEFAULT 0,  -- cents per unit, snapshot
+  is_repair    INT NOT NULL DEFAULT 0,  -- 1 = repair job
   sort_order   INT NOT NULL DEFAULT 0,
   created_at   BIGINT NOT NULL,
   PRIMARY KEY (id),

@@ -462,6 +462,7 @@ export const projectServices = mysqlTable("project_services", {
   unit: varchar("unit", { length: 40 }).notNull().default("sq ft"),
   quantity: double("quantity").notNull().default(0),
   rate: int("rate").notNull().default(0), // cents per unit, snapshot
+  isRepair: int("is_repair").notNull().default(0), // 1 = repair job
   sortOrder: int("sort_order").notNull().default(0),
   createdAt: timestampMs("created_at").notNull().$defaultFn(() => new Date()),
 });

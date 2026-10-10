@@ -795,13 +795,14 @@ const projectServiceOut = z.object({
   id: z.number(), companyId: z.string(), projectId: z.number(),
   serviceId: z.number().nullable(), serviceName: z.string(), unit: z.string(),
   quantity: z.number(), rate: z.number(), // cents per unit snapshot
+  isRepair: z.number(),
   lineTotal: z.number(), // cents = quantity × rate
 });
 function toProjectServiceOut(r: typeof schema.projectServices.$inferSelect) {
   return {
     id: r.id, companyId: r.companyId, projectId: r.projectId,
     serviceId: r.serviceId ?? null, serviceName: r.serviceName, unit: r.unit,
-    quantity: r.quantity, rate: r.rate,
+    quantity: r.quantity, rate: r.rate, isRepair: r.isRepair ?? 0,
     lineTotal: Math.round(r.quantity * r.rate),
   };
 }
@@ -2256,7 +2257,7 @@ export const Actions = {
   }),
 
   addProjectServiceFromPhase: defineAction({
-    request: z.object({ companyId, actorId: z.number(), projectId: z.number(), typeId: z.number(), phaseId: z.number(), quantity: z.number().positive().max(100000000), unit: z.string().min(1).max(40).default("sq ft") }),
+    request: z.object({ companyId, actorId: z.number(), projectId: z.number(), typeId: z.number(), phaseId: z.number(), quantity: z.number().positive().max(100000000), unit: z.string().min(1).max(40).default("sq ft"), isRepair: z.number().int().min(0).max(1).default(0) }),
     response: z.object({ id: z.number() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
@@ -2275,6 +2276,7 @@ export const Actions = {
       const r = await db.insert(schema.projectServices).values({
         companyId: args.companyId, projectId: args.projectId, serviceId: null,
         serviceName, unit: args.unit, quantity: args.quantity, rate: 0,
+        isRepair: args.isRepair,
         sortOrder, createdAt: new Date(),
       }).$returningId();
       ctx.invalidateQueries();

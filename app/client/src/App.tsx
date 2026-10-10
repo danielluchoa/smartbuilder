@@ -5568,6 +5568,61 @@ function InvoiceDetail({ cid, invoiceId, session, onBack }: { cid: string; invoi
 type EmpForm = { name: string; trade: string; phone: string; email: string; role: string; payType: string; payRate: string; status: string };
 const emptyEmpForm = (): EmpForm => ({ name: "", trade: "", phone: "", email: "", role: "funcionario", payType: "hora", payRate: "", status: "ativo" });
 
+/* Employee work history: projects worked on and total earnings (from approved timesheets). */
+function EmployeeHistorySection({ cid, session, employeeId, employeeName }: { cid: string; session: Session; employeeId: number; employeeName: string }) {
+  const q = useQuery({
+    queryKey: ["employee-history", cid, employeeId],
+    queryFn: () => api.getEmployeeHistory({ companyId: cid, actorId: session.userId, employeeId }),
+  });
+  const [show, setShow] = useState(false);
+  if (!show) {
+    return (
+      <button type="button" onClick={() => setShow(true)} className="mt-3 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm font-bold text-[#f97316]">
+        📊 {tr("View work history", "Ver histórico de trabalho", "Ver historial de trabajo")}
+      </button>
+    );
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+      <div className="flex items-center justify-between">
+        <h4 className="font-bold">📊 {tr("Work history", "Histórico de trabalho", "Historial de trabajo")}</h4>
+        <button type="button" onClick={() => setShow(false)} className="text-xs font-bold text-[var(--dim)]">{tr("Hide", "Ocultar", "Ocultar")}</button>
+      </div>
+      {q.isPending && <p className="mt-2 text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
+      {q.error && <p className="mt-2 text-sm text-red-600">{tr("Could not load history.", "Não foi possível carregar o histórico.", "No se pudo cargar el historial.")}</p>}
+      {q.data && (
+        <>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <div className="rounded-lg bg-[var(--surface2)] p-2 text-center">
+              <p className="text-lg font-black">{q.data.totalHours}h</p>
+              <p className="text-xs text-[var(--dim)]">{tr("Total hours", "Total de horas", "Horas totales")}</p>
+            </div>
+            <div className="rounded-lg bg-[var(--surface2)] p-2 text-center">
+              <p className="text-lg font-black text-green-700">{fmtUSD(q.data.totalEarnings)}</p>
+              <p className="text-xs text-[var(--dim)]">{tr("Total earned", "Total ganho", "Total ganado")}</p>
+            </div>
+          </div>
+          {q.data.projects.length === 0 ? (
+            <p className="mt-2 text-sm text-[var(--dim)] text-center py-2">{tr("No approved work yet.", "Nenhum trabalho aprovado ainda.", "Sin trabajo aprobado todavía.")}</p>
+          ) : (
+            <div className="mt-2 space-y-1">
+              {q.data.projects.map((p) => (
+                <div key={p.projectId} className="flex items-center justify-between rounded-lg bg-[var(--surface2)] px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">🏗️ {p.projectName}</p>
+                    <p className="text-xs text-[var(--dim)]">{p.entries} {tr("entries", "registros", "registros")} • {p.totalHours}h</p>
+                  </div>
+                  <p className="shrink-0 text-sm font-bold text-green-700">{fmtUSD(p.totalEarnings)}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Team({ cid, session }: { cid: string; session: Session }) {
   const q = useQuery({ queryKey: ["employees", cid], queryFn: () => api.listEmployees({ companyId: cid }) });
   const qc = useQueryClient();
@@ -5671,6 +5726,7 @@ function Team({ cid, session }: { cid: string; session: Session }) {
                     <div className="col-span-2"><dt className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Email", "E-mail", "Correo electrónico")}</dt><dd>{e.email || "—"}</dd></div>
                     {session.role === "admin" && <div className="col-span-2"><dt className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Current pay", "Pagamento atual", "Pago actual")}</dt><dd>{payBadge(e.payType, e.payRate)}</dd></div>}
                   </dl>
+                  <EmployeeHistorySection cid={cid} session={session} employeeId={e.id} employeeName={e.name} />
                   <p className="mt-2 text-xs text-[var(--dim)]">{tr("Pay changes apply to future check-ins; approved entries keep their captured pay.", "Alterações de pagamento valem para check-ins futuros; registros aprovados mantêm o pagamento capturado.", "Los cambios de pago aplican a futuros registros de entrada; los registros aprobados conservan el pago capturado.")}</p>
                   {canManage && <button type="button" aria-label={tr(`Edit employee ${e.name} from details`, `Editar o funcionário ${e.name} pelos detalhes`, `Editar al empleado ${e.name} desde los detalles`)} onClick={() => openEditEmp(e)} className={`${btnNavy} mt-3 w-full py-2.5 text-sm`}>{tr("Edit employee", "Editar funcionário", "Editar empleado")}</button>}
                 </div>
@@ -6787,6 +6843,28 @@ function SubscriptionPanel({ ownerEmail }: { ownerEmail: string }) {
                   {showPayFor === b.companyId ? tr("Close", "Fechar", "Cerrar") : tr("+ Record payment", "+ Lançar pagamento", "+ Registrar pago")}
                 </button>
               </div>
+              {b.startDate && (
+                <div className="mt-2 rounded-xl bg-[var(--surface2)] p-3 text-sm">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <p className="text-xs text-[var(--dim)]">{tr("Since", "Desde", "Desde")}</p>
+                      <p className="font-bold">{fmtDate(b.startDate)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--dim)]">{tr("Weeks", "Semanas", "Semanas")}</p>
+                      <p className="font-bold">{b.weeksElapsed}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--dim)]">{tr("Total due", "Total devido", "Total debido")}</p>
+                      <p className="font-bold">{fmtUSD(b.totalDueCents)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--dim)]">{tr("Balance", "Saldo", "Saldo")}</p>
+                      <p className={`font-black ${b.balanceCents > 0 ? "text-red-600" : "text-green-700"}`}>{fmtUSD(b.balanceCents)}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
               {showPayFor === b.companyId && (
                 <div className="mt-2 rounded-xl bg-[var(--surface2)] p-3">
                   <div className="grid grid-cols-2 gap-2">

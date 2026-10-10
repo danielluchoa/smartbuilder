@@ -2532,6 +2532,69 @@ export const Actions = {
     },
   }),
 
+  getEmployeeHistory: defineAction({
+    request: z.object({ companyId, actorId: z.number(), employeeId: z.number() }),
+    response: z.object({
+      projects: z.array(z.object({
+        projectId: z.number(), projectName: z.string(),
+        totalHours: z.number(), totalEarnings: z.number(), // cents
+        entries: z.number(),
+      })),
+      totalHours: z.number(),
+      totalEarnings: z.number(), // cents
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      // Get approved timesheets for this employee
+      const sheets = await db.select().from(schema.timesheets).where(
+        and(
+          eq(schema.timesheets.companyId, args.companyId),
+          eq(schema.timesheets.employeeId, args.employeeId),
+          eq(schema.timesheets.status, "aprovado")
+        )
+      );
+      // Group by project
+      const byProject = new Map<number, { hours: number; earnings: number; entries: number }>();
+      for (const s of sheets) {
+        const g = byProject.get(s.projectId) ?? { hours: 0, earnings: 0, entries: 0 };
+        g.hours += s.hoursCalc ?? 0;
+        g.entries += 1;
+        // Calculate earnings from snapshot
+        let earning = 0;
+        if (s.payTypeSnapshot === "hora") {
+          earning = Math.round((s.hoursCalc ?? 0) * (s.payRateSnapshot ?? 0));
+        } else if (s.payTypeSnapshot === "diaria") {
+          // Assume 1 entry = 1 day for diaria
+          earning = s.payRateSnapshot ?? 0;
+        } else {
+          // contrato - use rate as is (per entry)
+          earning = s.payRateSnapshot ?? 0;
+        }
+        g.earnings += earning;
+        byProject.set(s.projectId, g);
+      }
+      // Get project names
+      const projectIds = Array.from(byProject.keys());
+      const projects = projectIds.length > 0
+        ? await db.select().from(schema.projects).where(inArray(schema.projects.id, projectIds))
+        : [];
+      const projectMap = new Map(projects.map((p) => [p.id, p.name]));
+      const result = Array.from(byProject.entries()).map(([pid, g]) => ({
+        projectId: pid,
+        projectName: projectMap.get(pid) ?? `Project #${pid}`,
+        totalHours: Math.round(g.hours * 100) / 100,
+        totalEarnings: g.earnings,
+        entries: g.entries,
+      })).sort((a, b) => b.totalEarnings - a.totalEarnings);
+      const totalHours = result.reduce((s, r) => s + r.totalHours, 0);
+      const totalEarnings = result.reduce((s, r) => s + r.totalEarnings, 0);
+      return { projects: result, totalHours: Math.round(totalHours * 100) / 100, totalEarnings };
+    },
+  }),
+
   createEmployee: defineAction({
     request: z.object({ companyId, actorId: z.number().optional(), name: z.string().min(1), role: z.enum(["admin", "gerente", "funcionario", "cliente"]).default("funcionario"), trade: z.string().default(""), phone: z.string().default(""), email: z.string().default(""), payType: z.enum(["hora", "diaria", "contrato"]).default("hora"), payRate: money, status: z.enum(["ativo", "inativo"]).default("ativo") }),
     response: z.object({ id: z.number() }),
@@ -5082,6 +5145,10 @@ export const Actions = {
         userCount: z.number(), billableUsers: z.number(),
         weeklyFeeCents: z.number(),
         totalPaidCents: z.number(), lastPaymentDate: z.string().nullable(),
+        startDate: z.string().nullable(),
+        weeksElapsed: z.number(),
+        totalDueCents: z.number(),
+        balanceCents: z.number(),
       })),
       totalWeeklyCents: z.number(),
     }),
@@ -5091,6 +5158,7 @@ export const Actions = {
       const comps = await db.select().from(schema.companies).orderBy(asc(schema.companies.name));
       const builders = [];
       let totalWeeklyCents = 0;
+      const now = new Date();
       for (const c of comps) {
         const users = await db.select({ id: schema.employees.id, role: schema.employees.role })
           .from(schema.employees).where(eq(schema.employees.companyId, c.id));
@@ -5100,12 +5168,27 @@ export const Actions = {
           .where(eq(schema.subscriptionPayments.companyId, c.id))
           .orderBy(desc(schema.subscriptionPayments.paidDate));
         const totalPaidCents = pays.reduce((s, p) => s + p.amountCents, 0);
+        // Weekly due calculation from creation date
+        const startDate = c.createdAt ? new Date(c.createdAt) : null;
+        let weeksElapsed = 0;
+        let totalDueCents = 0;
+        if (startDate) {
+          const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+          weeksElapsed = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / msPerWeek));
+          const weeklyTotal = (c.weeklyFeeCents ?? 0) * billable;
+          totalDueCents = weeklyTotal * weeksElapsed;
+        }
+        const balanceCents = totalDueCents - totalPaidCents;
         builders.push({
           companyId: c.id, companyName: c.name, code: c.code, status: c.status,
           userCount: users.length, billableUsers: billable,
           weeklyFeeCents: c.weeklyFeeCents ?? 0,
           totalPaidCents,
           lastPaymentDate: pays.length > 0 ? pays[0]!.paidDate : null,
+          startDate: startDate ? startDate.toISOString().split("T")[0] : null,
+          weeksElapsed,
+          totalDueCents,
+          balanceCents,
         });
         totalWeeklyCents += (c.weeklyFeeCents ?? 0) * billable;
       }

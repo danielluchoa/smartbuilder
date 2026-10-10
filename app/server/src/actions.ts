@@ -2227,6 +2227,33 @@ export const Actions = {
     },
   }),
 
+  addProjectServiceFromPhase: defineAction({
+    request: z.object({ companyId, actorId: z.number(), projectId: z.number(), typeId: z.number(), phaseId: z.number(), quantity: z.number().positive().max(100000000), unit: z.string().min(1).max(40).default("sq ft") }),
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const proj = await db.select().from(schema.projects).where(and(eq(schema.projects.companyId, args.companyId), eq(schema.projects.id, args.projectId))).limit(1);
+      if (!proj[0]) throw new Error("Project not found");
+      const typeRows = await db.select().from(schema.serviceTypes).where(and(eq(schema.serviceTypes.companyId, args.companyId), eq(schema.serviceTypes.id, args.typeId))).limit(1);
+      if (!typeRows[0]) throw new Error("Service type not found");
+      const phaseRows = await db.select().from(schema.servicePhases).where(and(eq(schema.servicePhases.id, args.phaseId), eq(schema.servicePhases.typeId, args.typeId))).limit(1);
+      if (!phaseRows[0]) throw new Error("Phase not found");
+      const siblings = await db.select().from(schema.projectServices).where(and(eq(schema.projectServices.companyId, args.companyId), eq(schema.projectServices.projectId, args.projectId)));
+      const sortOrder = siblings.reduce((m, s) => Math.max(m, s.sortOrder), 0) + 1;
+      const serviceName = `${typeRows[0].name} — ${phaseRows[0].name}`;
+      const r = await db.insert(schema.projectServices).values({
+        companyId: args.companyId, projectId: args.projectId, serviceId: null,
+        serviceName, unit: args.unit, quantity: args.quantity, rate: 0,
+        sortOrder, createdAt: new Date(),
+      }).$returningId();
+      ctx.invalidateQueries();
+      return { id: r[0]!.id };
+    },
+  }),
+
   updateProjectService: defineAction({
     request: z.object({ companyId, actorId: z.number(), lineId: z.number(), quantity: z.number().positive().max(100000000) }),
     response: z.object({ ok: z.literal(true) }),

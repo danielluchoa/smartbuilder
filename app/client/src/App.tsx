@@ -770,18 +770,29 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
   const qc = useQueryClient();
   const linesQ = useQuery({ queryKey: ["project-services", cid, projectId], queryFn: () => api.listProjectServices({ companyId: cid, projectId, actorId }) });
   const catalogQ = useQuery({ queryKey: ["services", cid], queryFn: () => api.listServices({ companyId: cid }), enabled: canManage });
+  const typesQ = useQuery({ queryKey: ["service-types", cid], queryFn: () => api.listServiceTypes({ companyId: cid }), enabled: canManage });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["project-services", cid, projectId] });
   const [pickService, setPickService] = useState("");
   const [pickQty, setPickQty] = useState("");
+  const [pickType, setPickType] = useState("");
+  const [pickPhase, setPickPhase] = useState("");
+  const [useTypePhase, setUseTypePhase] = useState(true);
   const [msg, setMsg] = useState("");
   const [editLineId, setEditLineId] = useState<number | null>(null);
   const [editQty, setEditQty] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const addLine = useMutation({
-    mutationFn: () => api.addProjectService({ companyId: cid, actorId, projectId, serviceId: Number(pickService), quantity: parseFloat(pickQty.replace(",", ".")) || 0 }),
-    onSuccess: () => { invalidate(); setPickQty(""); setMsg(tr("Measurement added. The crew can see it now. ✅", "Medição adicionada. A equipe já pode vê-la. ✅", "Medición agregada. El equipo ya puede verla. ✅")); },
+    mutationFn: () => {
+      const qty = parseFloat(pickQty.replace(",", ".")) || 0;
+      if (useTypePhase) {
+        return api.addProjectServiceFromPhase({ companyId: cid, actorId, projectId, typeId: Number(pickType), phaseId: Number(pickPhase), quantity: qty });
+      }
+      return api.addProjectService({ companyId: cid, actorId, projectId, serviceId: Number(pickService), quantity: qty });
+    },
+    onSuccess: () => { invalidate(); setPickQty(""); setPickPhase(""); setMsg(tr("Measurement added. The crew can see it now. ✅", "Medição adicionada. A equipe já pode vê-la. ✅", "Medición agregada. El equipo ya puede verla. ✅")); },
     onError: () => setMsg(tr("Could not add this measurement. Pick a service and a quantity above zero.", "Não foi possível adicionar esta medição. Escolha um serviço e uma quantidade acima de zero.", "No se pudo agregar esta medición. Elige un servicio y una cantidad mayor que cero.")),
   });
+  const addFromPhase = addLine;
   const saveLine = useMutation({
     mutationFn: (lineId: number) => api.updateProjectService({ companyId: cid, actorId, lineId, quantity: parseFloat(editQty.replace(",", ".")) || 0 }),
     onSuccess: () => { invalidate(); setEditLineId(null); setMsg(tr("Measurement saved. ✅", "Medição salva. ✅", "Medición guardada. ✅")); },
@@ -794,25 +805,54 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
   });
   const lines = linesQ.data?.lines ?? [];
   const catalog = catalogQ.data?.services ?? [];
+  const types = typesQ.data?.types ?? [];
+  const phases = typesQ.data?.phases ?? [];
+  const filteredPhases = pickType ? phases.filter((p) => p.typeId === Number(pickType)).sort((a, b) => a.phaseNumber - b.phaseNumber) : [];
   const ratedTotal = lines.reduce((s, l) => s + l.lineTotal, 0);
   return (
     <div>
       {canManage && (
         <form className="mt-3 space-y-2 rounded-xl bg-[var(--surface2)] p-3" onSubmit={(e) => { e.preventDefault(); addLine.mutate(); }}>
-          <div className="grid grid-cols-[1fr_7rem] gap-2">
-            <Field label={tr("Service", "Serviço", "Servicio")}>
-              <select aria-label={tr("Service for the new measurement", "Serviço da nova medição", "Servicio de la nueva medición")} className={inputCls} value={pickService} onChange={(e) => setPickService(e.target.value)} required>
-                <option value="">{tr("Pick a service…", "Escolha um serviço…", "Elige un servicio…")}</option>
-                {catalog.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.unit}){s.defaultRate > 0 ? ` • ${fmtUSD(s.defaultRate)}/${s.unit}` : ""}</option>)}
-              </select>
-            </Field>
-            <Field label={tr("Quantity", "Quantidade", "Cantidad")}>
-              <input aria-label={tr("Quantity needed", "Quantidade necessária", "Cantidad necesaria")} className={inputCls} inputMode="decimal" value={pickQty} onChange={(e) => setPickQty(e.target.value)} placeholder="400" required />
-            </Field>
-          </div>
-          {catalog.length === 0 && <p className="text-[11px] text-[var(--dim)]">{tr("The Services catalog is empty — add services in the Services tab first.", "O catálogo de serviços está vazio — adicione serviços primeiro na aba Serviços.", "El catálogo de servicios está vacío: primero agrega servicios en la pestaña Servicios.")}</p>}
-          <button className={`${btnNavy} w-full`} disabled={addLine.isPending || !pickService || !(parseFloat(pickQty.replace(",", ".")) > 0)}>{addLine.isPending ? tr("Adding…", "Adicionando…", "Agregando…") : tr("+ Add measurement", "+ Adicionar medição", "+ Agregar medición")}</button>
-          <p className="text-[11px] text-[var(--dim)]">{tr("Example: Hardwood floor — 400 sq ft. Whatever is listed here is exactly what the crew sees on this project.", "Exemplo: Piso de madeira — 400 sq ft. O que estiver listado aqui é exatamente o que a equipe vê nesta obra.", "Ejemplo: Piso de madera: 400 sq ft. Lo que aparezca aquí es exactamente lo que el equipo ve en esta obra.")}</p>
+          {useTypePhase ? (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label={tr("Type", "Tipo", "Tipo")}>
+                  <select aria-label={tr("Service type", "Tipo de serviço", "Tipo de servicio")} className={inputCls} value={pickType} onChange={(e) => { setPickType(e.target.value); setPickPhase(""); }} required>
+                    <option value="">{tr("Pick a type…", "Escolha um tipo…", "Elige un tipo…")}</option>
+                    {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </Field>
+                <Field label={tr("Phase", "Fase", "Fase")}>
+                  <select aria-label={tr("Service phase", "Fase do serviço", "Fase del servicio")} className={inputCls} value={pickPhase} onChange={(e) => setPickPhase(e.target.value)} required disabled={!pickType}>
+                    <option value="">{tr("Pick a phase…", "Escolha uma fase…", "Elige una fase…")}</option>
+                    {filteredPhases.map((p) => <option key={p.id} value={p.id}>{p.phaseNumber}. {p.name}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label={tr("Quantity", "Quantidade", "Cantidad")}>
+                <input aria-label={tr("Quantity needed", "Quantidade necessária", "Cantidad necesaria")} className={inputCls} inputMode="decimal" value={pickQty} onChange={(e) => setPickQty(e.target.value)} placeholder="400" required />
+              </Field>
+              <button type="button" onClick={() => setUseTypePhase(false)} className="text-xs text-[var(--dim)] underline">{tr("Or pick from the classic catalog", "Ou escolha do catálogo clássico", "O elige del catálogo clásico")}</button>
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-[1fr_7rem] gap-2">
+                <Field label={tr("Service", "Serviço", "Servicio")}>
+                  <select aria-label={tr("Service for the new measurement", "Serviço da nova medição", "Servicio de la nueva medición")} className={inputCls} value={pickService} onChange={(e) => setPickService(e.target.value)} required>
+                    <option value="">{tr("Pick a service…", "Escolha um serviço…", "Elige un servicio…")}</option>
+                    {catalog.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.unit}){s.defaultRate > 0 ? ` • ${fmtUSD(s.defaultRate)}/${s.unit}` : ""}</option>)}
+                  </select>
+                </Field>
+                <Field label={tr("Quantity", "Quantidade", "Cantidad")}>
+                  <input aria-label={tr("Quantity needed", "Quantidade necessária", "Cantidad necesaria")} className={inputCls} inputMode="decimal" value={pickQty} onChange={(e) => setPickQty(e.target.value)} placeholder="400" required />
+                </Field>
+              </div>
+              <button type="button" onClick={() => setUseTypePhase(true)} className="text-xs text-[var(--dim)] underline">{tr("Or pick by type & phase", "Ou escolha por tipo e fase", "O elige por tipo y fase")}</button>
+            </>
+          )}
+          {types.length === 0 && useTypePhase && <p className="text-[11px] text-[var(--dim)]">{tr("The Services tab has the types & phases — they load automatically.", "A aba Serviços tem os tipos e fases — carregam automaticamente.", "La pestaña Servicios tiene los tipos y fases: se cargan automáticamente.")}</p>}
+          <button className={`${btnNavy} w-full`} disabled={addLine.isPending || !(parseFloat(pickQty.replace(",", ".")) > 0) || (useTypePhase ? (!pickType || !pickPhase) : !pickService)}>{addLine.isPending ? tr("Adding…", "Adicionando…", "Agregando…") : tr("+ Add measurement", "+ Adicionar medição", "+ Agregar medición")}</button>
+          <p className="text-[11px] text-[var(--dim)]">{tr("Example: Hardwood Flooring — Installation, 400 sq ft. Whatever is listed here is exactly what the crew sees on this project.", "Exemplo: Hardwood Flooring — Installation, 400 sq ft. O que estiver listado aqui é exatamente o que a equipe vê nesta obra.", "Ejemplo: Hardwood Flooring — Installation, 400 sq ft. Lo que aparezca aquí es exactamente lo que el equipo ve en esta obra.")}</p>
         </form>
       )}
       {msg && <p className="mt-2 text-xs font-semibold" role="status">{msg}</p>}
@@ -2612,11 +2652,37 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const [crewSearch, setCrewSearch] = useState("");
   const [crewSelection, setCrewSelection] = useState<Set<number>>(new Set());
   const [saveMsg, setSaveMsg] = useState("");
+  // Create job from type & phase
+  const [showCreateJob, setShowCreateJob] = useState(false);
+  const [cjProject, setCjProject] = useState("");
+  const [cjType, setCjType] = useState("");
+  const [cjPhase, setCjPhase] = useState("");
+  const [cjMsg, setCjMsg] = useState("");
 
   const dispatchQ = useQuery({ queryKey: ["dispatch", cid, date], queryFn: () => api.getDispatch({ companyId: cid, actorId: session.userId, date }) });
   const employeesQ = useQuery({ queryKey: ["employees", cid], queryFn: () => api.listEmployees({ companyId: cid }) });
   const allEmployees = employeesQ.data?.employees ?? [];
   const assignableEmployees = allEmployees.filter((e) => e.status === "ativo" && e.role !== "cliente");
+  // For the create-job form
+  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }), enabled: showCreateJob });
+  const svcTypesQ = useQuery({ queryKey: ["service-types", cid], queryFn: () => api.listServiceTypes({ companyId: cid }), enabled: showCreateJob });
+  const cjTypes = svcTypesQ.data?.types ?? [];
+  const cjPhases = svcTypesQ.data?.phases ?? [];
+  const cjFilteredPhases = cjType ? cjPhases.filter((p) => p.typeId === Number(cjType)).sort((a, b) => a.phaseNumber - b.phaseNumber) : [];
+  const createJobFromPhase = useMutation({
+    mutationFn: () => {
+      const t = cjTypes.find((x) => x.id === Number(cjType));
+      const p = cjPhases.find((x) => x.id === Number(cjPhase));
+      const name = t && p ? `${t.name} — ${p.phaseNumber}. ${p.name}` : "";
+      return api.createJob({ companyId: cid, actorId: session.userId, projectId: Number(cjProject), name, scope: p?.description ?? "" });
+    },
+    onSuccess: () => {
+      invalidateDispatch();
+      setShowCreateJob(false); setCjProject(""); setCjType(""); setCjPhase(""); setCjMsg("");
+      setSaveMsg(tr("Job created. ✅", "Trabalho criado. ✅", "Trabajo creado. ✅"));
+    },
+    onError: () => setCjMsg(tr("Could not create this job.", "Não foi possível criar este trabalho.", "No se pudo crear este trabajo.")),
+  });
 
   const invalidateDispatch = () => {
     qc.invalidateQueries({ queryKey: ["dispatch", cid] });
@@ -2687,10 +2753,39 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
       <div className="print:hidden">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")}</h2>
-          <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
+          <div className="flex gap-2">
+            <button type="button" className={btnPrimary} onClick={() => { setShowCreateJob((s) => !s); setCjMsg(""); }} aria-expanded={showCreateJob}>{showCreateJob ? tr("Close", "Fechar", "Cerrar") : tr("+ Create job", "+ Criar trabalho", "+ Crear trabajo")}</button>
+            <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
+          </div>
         </div>
         <p className="text-sm text-[var(--dim)]">{tr("Work distribution — who does what, on every project, at a glance.", "Distribuição de trabalhos — quem faz o quê, em cada obra, de relance.", "Distribución de trabajos: quién hace qué, en cada obra, de un vistazo.")}</p>
         <p className="mt-2 rounded-xl bg-[#0f2a44] px-3 py-2 text-sm font-bold text-white">{tr("Jobs have crews. Tasks have assignees.", "Trabalhos têm equipes. Tarefas têm responsáveis.", "Los trabajos tienen equipos. Las tareas tienen responsables.")}</p>
+        {showCreateJob && (
+          <form className="mt-3 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e) => { e.preventDefault(); createJobFromPhase.mutate(); }}>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <Field label={tr("Project", "Obra", "Obra")}>
+                <select className={inputCls} value={cjProject} onChange={(e) => setCjProject(e.target.value)} required>
+                  <option value="">{tr("Pick a project…", "Escolha uma obra…", "Elige una obra…")}</option>
+                  {(projectsQ.data?.projects ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </Field>
+              <Field label={tr("Type", "Tipo", "Tipo")}>
+                <select className={inputCls} value={cjType} onChange={(e) => { setCjType(e.target.value); setCjPhase(""); }} required>
+                  <option value="">{tr("Pick a type…", "Escolha um tipo…", "Elige un tipo…")}</option>
+                  {cjTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </Field>
+              <Field label={tr("Phase", "Fase", "Fase")}>
+                <select className={inputCls} value={cjPhase} onChange={(e) => setCjPhase(e.target.value)} required disabled={!cjType}>
+                  <option value="">{tr("Pick a phase…", "Escolha uma fase…", "Elige una fase…")}</option>
+                  {cjFilteredPhases.map((p) => <option key={p.id} value={p.id}>{p.phaseNumber}. {p.name}</option>)}
+                </select>
+              </Field>
+            </div>
+            {cjMsg && <p className="text-sm font-semibold text-red-600" role="alert">{cjMsg}</p>}
+            <button className={`${btnNavy} w-full`} disabled={createJobFromPhase.isPending || !cjProject || !cjType || !cjPhase}>{createJobFromPhase.isPending ? tr("Creating…", "Criando…", "Creando…") : tr("Create job", "Criar trabalho", "Crear trabajo")}</button>
+          </form>
+        )}
       </div>
       <div className="hidden print:block">
         <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")} — {date}</h2>

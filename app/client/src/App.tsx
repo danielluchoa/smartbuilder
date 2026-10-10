@@ -978,7 +978,7 @@ function ServicesView({ cid, session }: { cid: string; session: Session }) {
                         {p.description && <p className="mt-1 text-xs text-[var(--dim)]">{p.description}</p>}
                       </div>
                       {canManage && (
-                        <button type="button" onClick={() => { if (confirm(tr("Remove this phase?", "Remover esta fase?", "\u00bfEliminar esta fase?"))) deletePhase.mutate(p.id); }} className="shrink-0 text-xs font-bold text-red-600" aria-label={tr("Remove phase", "Remover fase", "Eliminar fase")}>\u2715</button>
+                        <button type="button" onClick={() => { if (confirm(tr("Remove this phase?", "Remover esta fase?", "\u00bfEliminar esta fase?"))) deletePhase.mutate(p.id); }} className="shrink-0 text-xs font-bold text-red-600" aria-label={tr("Remove phase", "Remover fase", "Eliminar fase")}>{"\u2715"}</button>
                       )}
                     </div>
                   ))}
@@ -5569,12 +5569,14 @@ type EmpForm = { name: string; trade: string; phone: string; email: string; role
 const emptyEmpForm = (): EmpForm => ({ name: "", trade: "", phone: "", email: "", role: "funcionario", payType: "hora", payRate: "", status: "ativo" });
 
 /* Employee work history: projects worked on and total earnings (from approved timesheets). */
-function EmployeeHistorySection({ cid, session, employeeId, employeeName }: { cid: string; session: Session; employeeId: number; employeeName: string }) {
+function EmployeeHistorySection({ cid, session, employeeId, employeeName, canView }: { cid: string; session: Session; employeeId: number; employeeName: string; canView: boolean }) {
   const q = useQuery({
     queryKey: ["employee-history", cid, employeeId],
     queryFn: () => api.getEmployeeHistory({ companyId: cid, actorId: session.userId, employeeId }),
+    enabled: canView,
   });
   const [show, setShow] = useState(false);
+  if (!canView) return null;
   if (!show) {
     return (
       <button type="button" onClick={() => setShow(true)} className="mt-3 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm font-bold text-[#f97316]">
@@ -5726,7 +5728,7 @@ function Team({ cid, session }: { cid: string; session: Session }) {
                     <div className="col-span-2"><dt className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Email", "E-mail", "Correo electrónico")}</dt><dd>{e.email || "—"}</dd></div>
                     {session.role === "admin" && <div className="col-span-2"><dt className="text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Current pay", "Pagamento atual", "Pago actual")}</dt><dd>{payBadge(e.payType, e.payRate)}</dd></div>}
                   </dl>
-                  <EmployeeHistorySection cid={cid} session={session} employeeId={e.id} employeeName={e.name} />
+                  <EmployeeHistorySection cid={cid} session={session} employeeId={e.id} employeeName={e.name} canView={canManage} />
                   <p className="mt-2 text-xs text-[var(--dim)]">{tr("Pay changes apply to future check-ins; approved entries keep their captured pay.", "Alterações de pagamento valem para check-ins futuros; registros aprovados mantêm o pagamento capturado.", "Los cambios de pago aplican a futuros registros de entrada; los registros aprobados conservan el pago capturado.")}</p>
                   {canManage && <button type="button" aria-label={tr(`Edit employee ${e.name} from details`, `Editar o funcionário ${e.name} pelos detalhes`, `Editar al empleado ${e.name} desde los detalles`)} onClick={() => openEditEmp(e)} className={`${btnNavy} mt-3 w-full py-2.5 text-sm`}>{tr("Edit employee", "Editar funcionário", "Editar empleado")}</button>}
                 </div>

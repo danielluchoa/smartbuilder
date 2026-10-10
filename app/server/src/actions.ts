@@ -740,6 +740,27 @@ const STARTER_SERVICE_TYPES: Array<{ name: string; phases: Array<{ name: string;
     ],
   },
 ];
+/* One-time data repair: renumber phases (by insertion order) for types that have
+   duplicate phase numbers — caused by an old seeder bug that wrote 1 for every phase. */
+async function repairDuplicatePhaseNumbers(db: CtxDb, companyId: string): Promise<void> {
+  const typeRows = await db.select({ id: schema.serviceTypes.id }).from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, companyId));
+  if (typeRows.length === 0) return;
+  const typeIds = typeRows.map((t) => t.id);
+  const dupes = await db.select({ typeId: schema.servicePhases.typeId })
+    .from(schema.servicePhases)
+    .where(inArray(schema.servicePhases.typeId, typeIds))
+    .groupBy(schema.servicePhases.typeId, schema.servicePhases.phaseNumber)
+    .having(sql`count(*) > 1`);
+  for (const d of dupes) {
+    const phases = await db.select().from(schema.servicePhases).where(eq(schema.servicePhases.typeId, d.typeId)).orderBy(asc(schema.servicePhases.id));
+    for (let i = 0; i < phases.length; i++) {
+      if (phases[i]!.phaseNumber !== i + 1) {
+        await db.update(schema.servicePhases).set({ phaseNumber: i + 1 }).where(eq(schema.servicePhases.id, phases[i]!.id));
+      }
+    }
+  }
+}
+
 async function ensureStarterServiceTypes(db: CtxDb, onlyCompanyId?: string): Promise<void> {
   try {
     const EXPECTED_TYPES = STARTER_SERVICE_TYPES.length; // 18
@@ -748,6 +769,7 @@ async function ensureStarterServiceTypes(db: CtxDb, onlyCompanyId?: string): Pro
       ? await db.select().from(schema.companies).where(eq(schema.companies.id, onlyCompanyId))
       : await db.select().from(schema.companies);
     for (const c of comps) {
+      await repairDuplicatePhaseNumbers(db, c.id);
       // Fast path: if the company already has at least the expected types+phases, skip the slow check.
       const typeRows = await db.select({ id: schema.serviceTypes.id }).from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, c.id));
       if (typeRows.length >= EXPECTED_TYPES) {
@@ -782,14 +804,15 @@ async function ensureStarterServiceTypes(db: CtxDb, onlyCompanyId?: string): Pro
         // Add missing phases
         const existingPhases = await db.select().from(schema.servicePhases).where(eq(schema.servicePhases.typeId, typeId));
         const existingPhaseNames = new Set(existingPhases.map((p) => p.name.toLowerCase()));
+        let nextPhaseNumber = existingPhases.reduce((m, p) => Math.max(m, p.phaseNumber), 0) + 1;
         for (let pi = 0; pi < st.phases.length; pi++) {
           const phase = st.phases[pi];
           if (!existingPhaseNames.has(phase.name.toLowerCase())) {
-            const maxPhase = existingPhases.reduce((m, p) => Math.max(m, p.phaseNumber), 0);
             await db.insert(schema.servicePhases).values({
-              typeId, phaseNumber: maxPhase + 1, name: phase.name,
+              typeId, phaseNumber: nextPhaseNumber, name: phase.name,
               description: phase.desc, createdAt: new Date(),
             });
+            nextPhaseNumber++;
           } else {
             // Update description if missing
             const ep = existingPhases.find((p) => p.name.toLowerCase() === phase.name.toLowerCase());

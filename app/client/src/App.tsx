@@ -1044,13 +1044,16 @@ function ServicesView({ cid, session }: { cid: string; session: Session }) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-xl font-bold">{tr("Services catalog", "Catálogo de serviços", "Catálogo de servicios")}</h2>
-        <p className="mt-1 text-sm text-[var(--dim)]">{tr("The kinds of work you measure and sell — e.g. Hardwood floor per sq ft. Add them here once, then put the required quantity on each project (like 400 sq ft) and the crew sees it in the field.", "Os tipos de trabalho que você mede e vende — ex.: Piso de madeira por sq ft. Cadastre aqui uma vez, depois lance a quantidade necessária em cada obra (como 400 sq ft) e a equipe vê no campo.", "Los tipos de trabajo que mides y vendes, p. ej., Piso de madera por sq ft. Cárgalos aquí una vez, luego pon la cantidad necesaria en cada obra (como 400 sq ft) y el equipo lo ve en el campo.")}</p>
+        <h2 className="text-xl font-bold">{tr("Services", "Serviços", "Servicios")}</h2>
+        <p className="mt-1 text-sm text-[var(--dim)]">{tr("Service types with their phases — e.g. Hardwood Flooring with its 8 phases. Pick a type and phase when adding services to a project or creating jobs in Dispatch.", "Tipos de serviço com suas fases — ex.: Hardwood Flooring com suas 8 fases. Escolha um tipo e fase ao adicionar serviços a uma obra ou criar trabalhos no Dispatch.", "Tipos de servicio con sus fases, p. ej., Hardwood Flooring con sus 8 fases. Elige un tipo y fase al agregar servicios a una obra o crear trabajos en Dispatch.")}</p>
       </div>
 
       <ServiceTypesSection cid={cid} session={session} />
 
-      <form className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e) => {
+      <details className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+        <summary className="cursor-pointer text-sm font-bold text-[var(--dim)]">{tr("Classic catalog (legacy)", "Catálogo clássico (legado)", "Catálogo clásico (legado)")}</summary>
+        <div className="mt-3">
+      <form className="space-y-3" onSubmit={(e) => {
         e.preventDefault();
         if (editId === null && !forceCreate) {
           const clash = serviceNameClash(name, q.data?.services ?? []);
@@ -1136,6 +1139,8 @@ function ServicesView({ cid, session }: { cid: string; session: Session }) {
         )}
       </div>
       <p className="text-[11px] text-[var(--dim)]">{tr("Starter services (Hardwood floor, Tile, Painting, Drywall, Roofing) come pre-loaded with no rates — edit them freely or delete the ones you don't use.", "Os serviços iniciais (Piso de madeira, Azulejo, Pintura, Drywall, Telhado) vêm pré-carregados sem tarifas — edite à vontade ou exclua os que não usar.", "Los servicios iniciales (Piso de madera, Azulejo, Pintura, Drywall, Techo) vienen precargados sin tarifas: edítalos libremente o elimina los que no uses.")}</p>
+        </div>
+      </details>
     </div>
   );
 }

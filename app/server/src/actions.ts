@@ -1,5 +1,5 @@
 import { defineAction, z, type ActionsModule, type SpaceDb } from "./runtime";
-import { eq, and, desc, asc, sql } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
 import * as schema from "./schema";
 
 /* Pure-TS SHA-256 (actions cannot import host crypto modules). Used only
@@ -740,10 +740,21 @@ const STARTER_SERVICE_TYPES: Array<{ name: string; phases: Array<{ name: string;
     ],
   },
 ];
-async function ensureStarterServiceTypes(db: CtxDb): Promise<void> {
+async function ensureStarterServiceTypes(db: CtxDb, onlyCompanyId?: string): Promise<void> {
   try {
-    const comps = await db.select().from(schema.companies);
+    const EXPECTED_TYPES = STARTER_SERVICE_TYPES.length; // 18
+    const EXPECTED_PHASES = STARTER_SERVICE_TYPES.reduce((s, t) => s + t.phases.length, 0); // 206
+    const comps = onlyCompanyId
+      ? await db.select().from(schema.companies).where(eq(schema.companies.id, onlyCompanyId))
+      : await db.select().from(schema.companies);
     for (const c of comps) {
+      // Fast path: if the company already has at least the expected types+phases, skip the slow check.
+      const typeRows = await db.select({ id: schema.serviceTypes.id }).from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, c.id));
+      if (typeRows.length >= EXPECTED_TYPES) {
+        const typeIds = typeRows.map((t) => t.id);
+        const phaseCountRows = await db.select({ n: sql<number>`count(*)` }).from(schema.servicePhases).where(inArray(schema.servicePhases.typeId, typeIds));
+        if ((phaseCountRows[0]?.n ?? 0) >= EXPECTED_PHASES) continue; // fully seeded
+      }
       const existing = await db.select().from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, c.id));
       const existingByName = new Map(existing.map((t) => [t.name.toLowerCase(), t]));
       for (let ti = 0; ti < STARTER_SERVICE_TYPES.length; ti++) {
@@ -2063,18 +2074,21 @@ export const Actions = {
   }),
 
   listServiceTypes: defineAction({
-    request: z.object({ companyId }),
+    request: z.object({ companyId, light: z.boolean().optional() }),
     response: z.object({ types: z.array(serviceTypeOut), phases: z.array(servicePhaseOut) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       await assertInternalActor(db, args);
-      await ensureStarterServiceTypes(db);
+      await ensureStarterServiceTypes(db, args.companyId);
       const types = await db.select().from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, args.companyId)).orderBy(asc(schema.serviceTypes.sortOrder), asc(schema.serviceTypes.name));
       const typeIds = types.map((t) => t.id);
       const phases = typeIds.length > 0
         ? await db.select().from(schema.servicePhases).where(inArray(schema.servicePhases.typeId, typeIds)).orderBy(asc(schema.servicePhases.phaseNumber))
         : [];
-      return { types: types.map(toServiceTypeOut), phases: phases.map(toServicePhaseOut) };
+      const mapPhase = (p: (typeof phases)[number]) => args.light
+        ? { ...toServicePhaseOut(p), description: "" }
+        : toServicePhaseOut(p);
+      return { types: types.map(toServiceTypeOut), phases: phases.map(mapPhase) };
     },
   }),
 

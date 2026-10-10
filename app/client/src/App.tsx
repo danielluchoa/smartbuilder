@@ -770,7 +770,7 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
   const qc = useQueryClient();
   const linesQ = useQuery({ queryKey: ["project-services", cid, projectId], queryFn: () => api.listProjectServices({ companyId: cid, projectId, actorId }) });
   const catalogQ = useQuery({ queryKey: ["services", cid], queryFn: () => api.listServices({ companyId: cid }), enabled: canManage });
-  const typesQ = useQuery({ queryKey: ["service-types", cid], queryFn: () => api.listServiceTypes({ companyId: cid }), enabled: canManage });
+  const typesQ = useQuery({ queryKey: ["service-types-light", cid], queryFn: () => api.listServiceTypes({ companyId: cid, light: true }), enabled: canManage });
   const invalidate = () => qc.invalidateQueries({ queryKey: ["project-services", cid, projectId] });
   const [pickService, setPickService] = useState("");
   const [pickQty, setPickQty] = useState("");
@@ -2544,7 +2544,7 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const assignableEmployees = allEmployees.filter((e) => e.status === "ativo" && e.role !== "cliente");
   // For the create-job form
   const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }), enabled: showCreateJob });
-  const svcTypesQ = useQuery({ queryKey: ["service-types", cid], queryFn: () => api.listServiceTypes({ companyId: cid }), enabled: showCreateJob });
+  const svcTypesQ = useQuery({ queryKey: ["service-types-light", cid], queryFn: () => api.listServiceTypes({ companyId: cid, light: true }), enabled: showCreateJob });
   const cjTypes = svcTypesQ.data?.types ?? [];
   const cjPhases = svcTypesQ.data?.phases ?? [];
   const cjFilteredPhases = cjType ? cjPhases.filter((p) => p.typeId === Number(cjType)).sort((a, b) => a.phaseNumber - b.phaseNumber) : [];

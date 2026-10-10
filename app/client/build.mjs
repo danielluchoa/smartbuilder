@@ -28,6 +28,15 @@ if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
+
+// Bun rewrites imported asset URLs as "./<name>-<hash>.<ext>" which the
+// browser resolves against the document ("/"), not "/assets/". Copy the
+// logo files to dist/ root so <img src> resolves correctly.
+import { copyFileSync, readdirSync } from "node:fs";
+for (const f of readdirSync(`${here}/dist/assets`)) {
+  if (f.startsWith("logo-")) copyFileSync(`${here}/dist/assets/${f}`, `${here}/dist/${f}`);
+}
+
 console.log(
   "[build] client built:",
   result.outputs.map((o) => o.path.replace(`${here}/`, "")).join(", "),

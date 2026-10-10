@@ -1857,7 +1857,7 @@ export function App() {
         {view === "team" && <Team cid={cid} session={session} />}
         {view === "clients" && <Clients cid={cid} session={session} onOpenProject={(id) => { setSelectedProject(id); setView("projects"); }} onOpenInvoice={(id) => { setSelectedInvoice(id); setView("invoices"); }} onNewInvoice={openNewInvoice} />}
         {view === "services" && isManager && <ServicesView cid={cid} session={session} />}
-        {view === "fleet" && isManager && <FleetView cid={cid} session={session} />}
+        {view === "fleet" && (isManager || session.role === "funcionario") && <FleetView cid={cid} session={session} />}
         {view === "settings" && isAdmin && <CompanySettings cid={cid} session={session} />}
         {(view === "dashboard" && !isManager) || (view === "dispatch" && !isManager) || (view === "payroll" && !canMoney) || ((view === "expenses" || view === "invoices" || view === "costs") && !canMoney) || (view === "services" && !isManager) || (view === "clients" && !isManager) ? (
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-center">

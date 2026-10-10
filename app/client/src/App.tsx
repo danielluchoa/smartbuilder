@@ -3053,7 +3053,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
           {v.currentUserNames.length > 0 ? v.currentUserNames.map((n) => <span key={n} className="rounded-full bg-[#0f2a44] px-2 py-0.5 text-[11px] font-bold text-white">👤 {n}</span>) : <span className="text-xs text-[var(--dim)]">{tr("Not assigned to anyone right now.", "Não atribuído a ninguém no momento.", "Sin asignar a nadie en este momento.")}</span>}
         </p>
         <p className="mt-2 text-xs text-[var(--dim)]">{tr("Totals:", "Totais:", "Totales:")} ⛽ {fmtUSD(d.totals.fuelCost)} • 🔧 {fmtUSD(d.totals.maintenanceCost)} • 🎫 {fmtUSD(d.totals.ticketsCost)}{d.totals.openTicketsAmount > 0 ? ` (${fmtUSD(d.totals.openTicketsAmount)} ${tr("open", "em aberto", "abiertas")})` : ""}</p>
-        {!editing && !isEmployee ? (
+        {!isEmployee && !editing && (
           <div className="mt-3 flex gap-2">
             <button type="button" className={btnGhost} aria-label={tr(`Edit vehicle ${v.name}`, `Editar o veículo ${v.name}`, `Editar el vehículo ${v.name}`)} onClick={() => { setEName(v.name); setEMake(v.make); setEModel(v.model); setEYear(v.year > 0 ? String(v.year) : ""); setEPlate(v.plate); setEVin(v.vin); setEStatus(v.status); setEMileage(String(v.mileage)); setEEzpass(v.ezpass === 1); setETagNumber(v.tagNumber); setEditing(true); }}>{tr("Edit vehicle", "Editar veículo", "Editar vehículo")}</button>
             {confirmDelete ? (
@@ -3066,7 +3066,8 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
               <button type="button" className="rounded-xl border border-red-300 px-4 py-2.5 font-semibold text-red-600 active:opacity-70" aria-label={tr(`Delete vehicle ${v.name}`, `Excluir o veículo ${v.name}`, `Eliminar el vehículo ${v.name}`)} onClick={() => setConfirmDelete(true)}>{tr("Delete", "Excluir", "Eliminar")}</button>
             )}
           </div>
-        ) : (
+        )}
+        {!isEmployee && editing && (
           <form className="mt-3 space-y-2" onSubmit={(e) => { e.preventDefault(); saveVehicle.mutate(); }}>
             <Field label={tr("Unit name / number", "Nome / número da unidade", "Nombre / número de la unidad")}><input aria-label={tr("Unit name or number", "Nome ou número da unidade", "Nombre o número de la unidad")} className={inputCls} value={eName} onChange={(e) => setEName(e.target.value)} required /></Field>
             <div className="grid grid-cols-3 gap-2">

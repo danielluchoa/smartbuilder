@@ -860,6 +860,99 @@ function ProjectServicesSection({ cid, projectId, actorId, canManage }: { cid: s
   );
 }
 
+/* Service types & phases (admin/manager): a type is a main category
+   (e.g. "Hardwood Floors") with ordered phases inside (e.g. 1. Initial
+   Inspection & Measurements). */
+function ServiceTypesSection({ cid, session }: { cid: string; session: Session }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["service-types", cid], queryFn: () => api.listServiceTypes({ companyId: cid }) });
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["service-types", cid] }); };
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [newTypeName, setNewTypeName] = useState("");
+  const [newPhaseName, setNewPhaseName] = useState("");
+  const [newPhaseDesc, setNewPhaseDesc] = useState("");
+  const [msg, setMsg] = useState("");
+  const canManage = session.role !== "funcionario";
+
+  const createType = useMutation({
+    mutationFn: () => api.createServiceType({ companyId: cid, actorId: session.userId, name: newTypeName }),
+    onSuccess: () => { invalidate(); setNewTypeName(""); setMsg(tr("Service type added. ✅", "Tipo de serviço adicionado. ✅", "Tipo de servicio agregado. ✅")); },
+    onError: () => setMsg(tr("Could not add this type.", "Não foi possível adicionar este tipo.", "No se pudo agregar este tipo.")),
+  });
+  const createPhase = useMutation({
+    mutationFn: (typeId: number) => api.createServicePhase({ companyId: cid, actorId: session.userId, typeId, name: newPhaseName, description: newPhaseDesc || undefined }),
+    onSuccess: () => { invalidate(); setNewPhaseName(""); setNewPhaseDesc(""); setMsg(tr("Phase added. ✅", "Fase adicionada. ✅", "Fase agregada. ✅")); },
+    onError: () => setMsg(tr("Could not add this phase.", "Não foi possível adicionar esta fase.", "No se pudo agregar esta fase.")),
+  });
+  const deleteType = useMutation({
+    mutationFn: (typeId: number) => api.deleteServiceType({ companyId: cid, actorId: session.userId, typeId }),
+    onSuccess: () => { invalidate(); setExpandedId(null); setMsg(tr("Type and its phases removed.", "Tipo e suas fases removidos.", "Tipo y sus fases eliminados.")); },
+    onError: () => setMsg(tr("Could not remove this type.", "Não foi possível remover este tipo.", "No se pudo eliminar este tipo.")),
+  });
+  const deletePhase = useMutation({
+    mutationFn: (phaseId: number) => api.deleteServicePhase({ companyId: cid, actorId: session.userId, phaseId }),
+    onSuccess: () => { invalidate(); setMsg(tr("Phase removed.", "Fase removida.", "Fase eliminada.")); },
+    onError: () => setMsg(tr("Could not remove this phase.", "Não foi possível remover esta fase.", "No se pudo eliminar esta fase.")),
+  });
+
+  const types = q.data?.types ?? [];
+  const phases = q.data?.phases ?? [];
+
+  return (
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+      <h3 className="font-bold">🏷️ {tr("Service types & phases", "Tipos e fases de serviço", "Tipos y fases de servicio")}</h3>
+      <p className="mt-1 text-sm text-[var(--dim)]">{tr("A type groups the phases of a job — e.g. Hardwood Floors with its 8 phases. Tap a type to see its phases.", "Um tipo agrupa as fases de um serviço — ex.: Hardwood Floors com suas 8 fases. Toque num tipo para ver suas fases.", "Un tipo agrupa las fases de un servicio, p. ej., Hardwood Floors con sus 8 fases. Toca un tipo para ver sus fases.")}</p>
+      {msg && <p className="mt-2 text-sm font-semibold" role="status">{msg}</p>}
+      {q.isPending && <p className="mt-2 text-sm text-[var(--dim)]">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
+      <div className="mt-3 space-y-2">
+        {types.map((t) => {
+          const typePhases = phases.filter((p) => p.typeId === t.id).sort((a, b) => a.phaseNumber - b.phaseNumber);
+          const isOpen = expandedId === t.id;
+          return (
+            <div key={t.id} className="rounded-xl bg-[var(--surface2)] p-3">
+              <button type="button" onClick={() => setExpandedId(isOpen ? null : t.id)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={isOpen}>
+                <span className="font-bold">{t.name}</span>
+                <span className="text-sm text-[var(--dim)]">{typePhases.length} {tr("phases", "fases", "fases")} {isOpen ? "▾" : "▸"}</span>
+              </button>
+              {isOpen && (
+                <div className="mt-2 space-y-1 border-t border-[var(--border)] pt-2">
+                  {typePhases.map((p) => (
+                    <div key={p.id} className="flex items-start justify-between gap-2 rounded-lg bg-[var(--surface)] px-3 py-2">
+                      <div>
+                        <p className="text-sm font-semibold"><span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#f97316] text-xs font-bold text-white">{p.phaseNumber}</span>{p.name}</p>
+                        {p.description && <p className="mt-0.5 text-xs text-[var(--dim)]">{p.description}</p>}
+                      </div>
+                      {canManage && (
+                        <button type="button" onClick={() => { if (confirm(tr(`Remove phase "${p.name}"?`, `Remover a fase "${p.name}"?`, `¿Eliminar la fase "${p.name}"?`))) deletePhase.mutate(p.id); }} className="shrink-0 text-xs font-bold text-red-600" aria-label={tr(`Remove phase ${p.name}`, `Remover a fase ${p.name}`, `Eliminar la fase ${p.name}`)}>{tr("Remove", "Remover", "Eliminar")}</button>
+                      )}
+                    </div>
+                  ))}
+                  {typePhases.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No phases yet.", "Nenhuma fase ainda.", "Sin fases todavía.")}</p>}
+                  {canManage && (
+                    <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newPhaseName.trim()) createPhase.mutate(t.id); }}>
+                      <input aria-label={tr("New phase name", "Nome da nova fase", "Nombre de la nueva fase")} className={inputCls} value={newPhaseName} onChange={(e) => setNewPhaseName(e.target.value)} placeholder={tr("New phase…", "Nova fase…", "Nueva fase…")} />
+                      <button type="submit" disabled={createPhase.isPending || !newPhaseName.trim()} className={btnPrimary}>{tr("Add", "Adicionar", "Agregar")}</button>
+                    </form>
+                  )}
+                  {canManage && (
+                    <button type="button" onClick={() => { if (confirm(tr(`Remove type "${t.name}" and all its phases?`, `Remover o tipo "${t.name}" e todas as suas fases?`, `¿Eliminar el tipo "${t.name}" y todas sus fases?`))) deleteType.mutate(t.id); }} className="mt-1 text-xs font-bold text-red-600">{tr("Remove type", "Remover tipo", "Eliminar tipo")}</button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {canManage && (
+        <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newTypeName.trim()) createType.mutate(); }}>
+          <input aria-label={tr("New service type name", "Nome do novo tipo de serviço", "Nombre del nuevo tipo de servicio")} className={inputCls} value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder={tr("New type… e.g. Hardwood Floors", "Novo tipo… ex.: Hardwood Floors", "Nuevo tipo… ej.: Hardwood Floors")} />
+          <button type="submit" disabled={createType.isPending || !newTypeName.trim()} className={btnPrimary}>{tr("Add type", "Adicionar tipo", "Agregar tipo")}</button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 /* Services catalog tab (admin/manager): reusable services with a unit and
    an optional default rate. Starter services arrive seeded and stay fully
    editable. */
@@ -914,6 +1007,8 @@ function ServicesView({ cid, session }: { cid: string; session: Session }) {
         <h2 className="text-xl font-bold">{tr("Services catalog", "Catálogo de serviços", "Catálogo de servicios")}</h2>
         <p className="mt-1 text-sm text-[var(--dim)]">{tr("The kinds of work you measure and sell — e.g. Hardwood floor per sq ft. Add them here once, then put the required quantity on each project (like 400 sq ft) and the crew sees it in the field.", "Os tipos de trabalho que você mede e vende — ex.: Piso de madeira por sq ft. Cadastre aqui uma vez, depois lance a quantidade necessária em cada obra (como 400 sq ft) e a equipe vê no campo.", "Los tipos de trabajo que mides y vendes, p. ej., Piso de madera por sq ft. Cárgalos aquí una vez, luego pon la cantidad necesaria en cada obra (como 400 sq ft) y el equipo lo ve en el campo.")}</p>
       </div>
+
+      <ServiceTypesSection cid={cid} session={session} />
 
       <form className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e) => {
         e.preventDefault();

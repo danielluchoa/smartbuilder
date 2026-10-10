@@ -427,6 +427,27 @@ export const services = mysqlTable("services", {
   createdAt: timestampMs("created_at").notNull().$defaultFn(() => new Date()),
 });
 
+// --- Service types & phases ---
+// A service type is a main category (e.g. "Hardwood Floors"). Each type
+// has ordered phases (e.g. 1. Initial Inspection & Measurements, 2. Site
+// Preparation & Demolition, ...). Used to organize the services catalog
+// and to guide project setup.
+export const serviceTypes = mysqlTable("service_types", {
+  id: int("id").primaryKey().autoincrement(),
+  companyId: varchar("company_id", { length: 64 }).notNull(),
+  name: varchar("name", { length: 191 }).notNull(),
+  sortOrder: int("sort_order").notNull().default(0),
+  createdAt: timestampMs("created_at").notNull().$defaultFn(() => new Date()),
+});
+export const servicePhases = mysqlTable("service_phases", {
+  id: int("id").primaryKey().autoincrement(),
+  typeId: int("type_id").notNull(),
+  phaseNumber: int("phase_number").notNull(),
+  name: varchar("name", { length: 191 }).notNull(),
+  description: varchar("description", { length: 500 }),
+  createdAt: timestampMs("created_at").notNull().$defaultFn(() => new Date()),
+});
+
 // --- Required services & measurements on a project ---
 // One line = "this project needs X of service Y" (e.g. Hardwood floor —
 // 400 sq ft). Service name/unit/rate are snapshotted onto the line so the

@@ -429,6 +429,56 @@ const serviceOut = z.object({
 function toServiceOut(s: typeof schema.services.$inferSelect) {
   return { id: s.id, companyId: s.companyId, name: s.name, unit: s.unit, defaultRate: s.defaultRate };
 }
+const serviceTypeOut = z.object({
+  id: z.number(), companyId: z.string(), name: z.string(), sortOrder: z.number(),
+});
+const servicePhaseOut = z.object({
+  id: z.number(), typeId: z.number(), phaseNumber: z.number(), name: z.string(), description: z.string().nullable(),
+});
+function toServiceTypeOut(t: typeof schema.serviceTypes.$inferSelect) {
+  return { id: t.id, companyId: t.companyId, name: t.name, sortOrder: t.sortOrder };
+}
+function toServicePhaseOut(p: typeof schema.servicePhases.$inferSelect) {
+  return { id: p.id, typeId: p.typeId, phaseNumber: p.phaseNumber, name: p.name, description: p.description ?? null };
+}
+// Starter service types with phases (e.g. Hardwood Floors with 8 phases).
+const STARTER_SERVICE_TYPES: Array<{ name: string; phases: string[] }> = [
+  {
+    name: "Hardwood Floors",
+    phases: [
+      "Initial Inspection & Measurements",
+      "Site Preparation & Demolition",
+      "Subfloor Preparation",
+      "Wood Acclimation",
+      "Hardwood Floor Installation",
+      "Sanding, Staining & Finishing",
+      "Baseboards & Transitions",
+      "Final Cleaning & Quality Inspection",
+    ],
+  },
+];
+async function ensureStarterServiceTypes(db: CtxDb): Promise<void> {
+  try {
+    const comps = await db.select().from(schema.companies);
+    for (const c of comps) {
+      const existing = await db.select().from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, c.id));
+      if (existing.length === 0) {
+        for (let ti = 0; ti < STARTER_SERVICE_TYPES.length; ti++) {
+          const st = STARTER_SERVICE_TYPES[ti];
+          const inserted = await db.insert(schema.serviceTypes).values({
+            companyId: c.id, name: st.name, sortOrder: ti + 1, createdAt: new Date(),
+          });
+          const typeId = Number((inserted as unknown as { insertId: number }).insertId);
+          for (let pi = 0; pi < st.phases.length; pi++) {
+            await db.insert(schema.servicePhases).values({
+              typeId, phaseNumber: pi + 1, name: st.phases[pi], createdAt: new Date(),
+            });
+          }
+        }
+      }
+    }
+  } catch { /* tables may not exist yet before the migration runs */ }
+}
 const projectServiceOut = z.object({
   id: z.number(), companyId: z.string(), projectId: z.number(),
   serviceId: z.number().nullable(), serviceName: z.string(), unit: z.string(),
@@ -1696,6 +1746,100 @@ export const Actions = {
       await ensureStarterServices(db);
       const rows = await db.select().from(schema.services).where(eq(schema.services.companyId, args.companyId)).orderBy(asc(schema.services.sortOrder), asc(schema.services.name));
       return { services: rows.map(toServiceOut) };
+    },
+  }),
+
+  listServiceTypes: defineAction({
+    request: z.object({ companyId }),
+    response: z.object({ types: z.array(serviceTypeOut), phases: z.array(servicePhaseOut) }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await ensureStarterServiceTypes(db);
+      const types = await db.select().from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, args.companyId)).orderBy(asc(schema.serviceTypes.sortOrder), asc(schema.serviceTypes.name));
+      const typeIds = types.map((t) => t.id);
+      const phases = typeIds.length > 0
+        ? await db.select().from(schema.servicePhases).where(inArray(schema.servicePhases.typeId, typeIds)).orderBy(asc(schema.servicePhases.phaseNumber))
+        : [];
+      return { types: types.map(toServiceTypeOut), phases: phases.map(toServicePhaseOut) };
+    },
+  }),
+
+  createServiceType: defineAction({
+    request: z.object({ companyId, actorId: z.number(), name: z.string().min(1).max(120) }),
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const cleanName = args.name.trim().replace(/\s+/g, " ");
+      const existing = await db.select().from(schema.serviceTypes).where(eq(schema.serviceTypes.companyId, args.companyId));
+      const maxOrder = existing.reduce((m, t) => Math.max(m, t.sortOrder), 0);
+      const inserted = await db.insert(schema.serviceTypes).values({
+        companyId: args.companyId, name: cleanName, sortOrder: maxOrder + 1, createdAt: new Date(),
+      });
+      const id = Number((inserted as unknown as { insertId: number }).insertId);
+      ctx.invalidateQueries();
+      return { id };
+    },
+  }),
+
+  createServicePhase: defineAction({
+    request: z.object({ companyId, actorId: z.number(), typeId: z.number(), name: z.string().min(1).max(191), description: z.string().max(500).optional() }),
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const typeRows = await db.select().from(schema.serviceTypes).where(and(eq(schema.serviceTypes.companyId, args.companyId), eq(schema.serviceTypes.id, args.typeId))).limit(1);
+      if (typeRows.length === 0) throw new Error("Service type not found");
+      const cleanName = args.name.trim().replace(/\s+/g, " ");
+      const existing = await db.select().from(schema.servicePhases).where(eq(schema.servicePhases.typeId, args.typeId));
+      const maxPhase = existing.reduce((m, p) => Math.max(m, p.phaseNumber), 0);
+      const inserted = await db.insert(schema.servicePhases).values({
+        typeId: args.typeId, phaseNumber: maxPhase + 1, name: cleanName,
+        description: args.description?.trim() || null, createdAt: new Date(),
+      });
+      const id = Number((inserted as unknown as { insertId: number }).insertId);
+      ctx.invalidateQueries();
+      return { id };
+    },
+  }),
+
+  deleteServiceType: defineAction({
+    request: z.object({ companyId, actorId: z.number(), typeId: z.number() }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const typeRows = await db.select().from(schema.serviceTypes).where(and(eq(schema.serviceTypes.companyId, args.companyId), eq(schema.serviceTypes.id, args.typeId))).limit(1);
+      if (typeRows.length === 0) throw new Error("Service type not found");
+      await db.delete(schema.servicePhases).where(eq(schema.servicePhases.typeId, args.typeId));
+      await db.delete(schema.serviceTypes).where(eq(schema.serviceTypes.id, args.typeId));
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  deleteServicePhase: defineAction({
+    request: z.object({ companyId, actorId: z.number(), phaseId: z.number() }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const phaseRows = await db.select().from(schema.servicePhases).where(eq(schema.servicePhases.id, args.phaseId)).limit(1);
+      if (phaseRows.length === 0) throw new Error("Phase not found");
+      const typeRows = await db.select().from(schema.serviceTypes).where(and(eq(schema.serviceTypes.companyId, args.companyId), eq(schema.serviceTypes.id, phaseRows[0].typeId))).limit(1);
+      if (typeRows.length === 0) throw new Error("Service type not found");
+      await db.delete(schema.servicePhases).where(eq(schema.servicePhases.id, args.phaseId));
+      ctx.invalidateQueries();
+      return { ok: true as const };
     },
   }),
 

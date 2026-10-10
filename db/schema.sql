@@ -356,6 +356,28 @@ CREATE TABLE services (
   KEY idx_services_company (company_id)
 ) ENGINE=InnoDB;
 
+-- Service types & phases. A type is a main category (e.g. "Hardwood Floors").
+-- Each type has ordered phases (e.g. 1. Initial Inspection & Measurements).
+CREATE TABLE service_types (
+  id           INT NOT NULL AUTO_INCREMENT,
+  company_id   VARCHAR(64) NOT NULL,
+  name         VARCHAR(191) NOT NULL,
+  sort_order   INT NOT NULL DEFAULT 0,
+  created_at   BIGINT NOT NULL,  -- ms epoch
+  PRIMARY KEY (id),
+  KEY idx_service_types_company (company_id)
+) ENGINE=InnoDB;
+CREATE TABLE service_phases (
+  id           INT NOT NULL AUTO_INCREMENT,
+  type_id      INT NOT NULL,
+  phase_number INT NOT NULL,
+  name         VARCHAR(191) NOT NULL,
+  description  VARCHAR(500),
+  created_at   BIGINT NOT NULL,  -- ms epoch
+  PRIMARY KEY (id),
+  KEY idx_service_phases_type (type_id)
+) ENGINE=InnoDB;
+
 -- Required services & measurements on a project. Service name/unit/rate
 -- are snapshotted onto the line so it survives later catalog edits.
 CREATE TABLE project_services (

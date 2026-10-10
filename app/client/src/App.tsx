@@ -1701,13 +1701,37 @@ export function App() {
             </div>
             <LanguageToggle compact />
           </div>
-          <p className="mt-4 text-sm text-white/80">{tr("Sign in with your company email and password.", "Entre com seu e-mail da empresa e senha.", "Inicia sesión con tu correo de la empresa y contraseña.")}</p>
+          <p className="mt-4 text-sm text-white/80">{tr("Pick a company and a user to sign in. This is a demo login — no password — so you can test the flows and the separation between companies.", "Escolha uma empresa e um usuário para entrar. Este é um login de demonstração — sem senha — para você testar os fluxos e a separação entre empresas.", "Elige una empresa y un usuario para iniciar sesión. Este es un inicio de sesión de demostración — sin contraseña — para que puedas probar los flujos y la separación entre empresas.")}</p>
 
           {boot.isPending && <p className="mt-6 text-white/70">{tr("Loading…", "Carregando…", "Cargando…")}</p>}
           {boot.error && <p className="mt-6 text-red-300">{tr("Something went wrong loading.", "Algo deu errado ao carregar.", "Algo salió mal al cargar.")} <button className="underline" onClick={() => boot.refetch()}>{tr("Reload", "Recarregar", "Recargar")}</button></p>}
           {boot.data && (
             <div className="mt-6 space-y-5">
-              <form className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10 space-y-3" onSubmit={(e) => { e.preventDefault(); employeeLogin.mutate(); }}>
+              {boot.data.companies.map((c) => {
+                const companyUsers = boot.data!.users.filter((u) => u.companyId === c.id);
+                if (companyUsers.length === 0) return null;
+                return (
+                  <div key={c.id} className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-bold text-white">{c.name}</p>
+                      <span className="rounded-md bg-white/10 px-2 py-0.5 text-xs font-mono text-white/70">{c.code}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      {companyUsers.map((u) => (
+                        <button key={u.id} type="button" onClick={() => login({ companyId: c.id, companyName: c.name, userId: u.id, userName: u.name, role: u.role })}
+                          aria-label={tr(`Sign in as ${u.name}`, `Entrar como ${u.name}`, `Iniciar sesión como ${u.name}`)}
+                          className="rounded-xl bg-white/10 px-3 py-2.5 text-left active:bg-white/20">
+                          <p className="text-sm font-bold text-white">{u.name}</p>
+                          <p className="text-xs text-white/60">{roleLabel(u.role)}{u.trade ? ` • ${u.trade}` : ""}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              <details className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                <summary className="cursor-pointer text-sm font-bold text-white/80">{tr("Or sign in with email & password", "Ou entre com e-mail e senha", "O inicia sesión con correo y contraseña")}</summary>
+                <form className="mt-3 space-y-3" onSubmit={(e) => { e.preventDefault(); employeeLogin.mutate(); }}>
                 <Field label={tr("Email", "E-mail", "Correo")}>
                   <input aria-label={tr("Company email", "E-mail da empresa", "Correo de la empresa")} type="email" autoComplete="email" className="w-full rounded-xl bg-white px-4 py-2.5 text-sm text-[#12222f]" value={empEmailInput} onChange={(e) => setEmpEmailInput(e.target.value)} placeholder="you@company.com" required />
                 </Field>
@@ -1719,6 +1743,7 @@ export function App() {
                 </button>
                 {empLoginErr && <p className="text-sm font-semibold text-red-300" role="alert">{empLoginErr}</p>}
               </form>
+              </details>
             </div>
           )}
           <div className="mt-6 rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
@@ -5884,6 +5909,7 @@ function ClientPortal({ session, onSignOut }: { session: Session; onSignOut: () 
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <LanguageToggle compact />
+            <button aria-label={tr("Switch user", "Trocar usuário", "Cambiar de usuario")} onClick={onSignOut} className="shrink-0 rounded-lg bg-[#f97316] px-3 py-2 text-xs font-bold text-white active:opacity-80">{tr("Switch user", "Trocar usuário", "Cambiar de usuario")}</button>
             <button aria-label={tr("Sign out", "Sair", "Cerrar sesión")} onClick={onSignOut} className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold active:opacity-70">{tr("Sign out", "Sair", "Cerrar sesión")}</button>
           </div>
         </div>

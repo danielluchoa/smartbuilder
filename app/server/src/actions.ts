@@ -5499,6 +5499,113 @@ export const Actions = {
     },
   }),
 
+  /* Client report for ONE project: everything the client may see — work
+     summary per job/phase, photo record (progress timeline + task photos),
+     and the client-facing financial summary (contract value + this
+     project's invoices). CLIENT-SAFE by construction: no labor cost, no
+     materials/expenses, no profit — those never enter the response.
+     Serves both audiences with one action: admin/gerente may report on
+     any project of their company; a cliente actor (portal) only on
+     projects linked to their own clientId. assertInternalActor is NOT
+     used here on purpose (it rejects cliente actors); the role checks
+     below replace it. */
+  getClientReport: defineAction({
+    request: z.object({ companyId, actorId: z.number(), projectId: z.number() }),
+    response: z.object({
+      from: companyProfileOut.nullable(),
+      project: z.object({
+        id: z.number(), name: z.string(), clientName: z.string(), address: z.string(),
+        status: z.string(), scope: z.string(), progress: z.number(),
+        startDate: z.string(), endDate: z.string(),
+      }).nullable(),
+      jobs: z.array(z.object({
+        id: z.number(), name: z.string(), serviceName: z.string(), status: z.string(), isRepair: z.number(),
+        startDate: z.string(), endDate: z.string(),
+        taskTotal: z.number(), taskDone: z.number(), progress: z.number(),
+        tasks: z.array(z.object({ id: z.number(), title: z.string(), status: z.string(), completedAt: z.string().nullable() })),
+        photos: z.array(z.object({ id: z.number(), taskId: z.number(), taskTitle: z.string(), stage: z.string(), photoUrl: z.string(), createdAt: z.string() })),
+      })),
+      timeline: z.array(z.object({ id: z.number(), note: z.string(), photoUrl: z.string(), employeeName: z.string(), createdAt: z.string() })),
+      invoices: z.array(z.object({ id: z.number(), number: z.string(), issueDate: z.string(), dueDate: z.string(), status: z.string(), total: z.number(), paid: z.number(), balance: z.number() })),
+      financial: z.object({ contractValue: z.number(), invoiced: z.number(), paid: z.number(), balanceDue: z.number() }),
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const empty = { from: null, project: null, jobs: [], timeline: [], invoices: [], financial: { contractValue: 0, invoiced: 0, paid: 0, balanceDue: 0 } };
+      const actor = await getActor(db, args.companyId, args.actorId);
+      if (!actor) throw new Error("Not permitted.");
+      let clientScopeId: number | null = null;
+      if (actor.role === "cliente") {
+        const { client } = await requireClientUser(db, args.companyId, args.actorId);
+        clientScopeId = client.id;
+      } else if (actor.role !== "admin" && actor.role !== "gerente") {
+        throw new Error("Not permitted.");
+      }
+      const projRows = await db.select().from(schema.projects).where(and(eq(schema.projects.companyId, args.companyId), eq(schema.projects.id, args.projectId))).limit(1);
+      const p = projRows[0];
+      if (!p || (clientScopeId !== null && p.clientId !== clientScopeId)) return empty;
+      const compRows = await db.select().from(schema.companies).where(eq(schema.companies.id, args.companyId)).limit(1);
+      const from = compRows[0] ? toCompanyProfile(compRows[0]) : null;
+      const clientName = p.clientId !== null
+        ? ((await db.select().from(schema.clients).where(and(eq(schema.clients.companyId, args.companyId), eq(schema.clients.id, p.clientId))).limit(1))[0]?.name ?? "")
+        : "";
+      const parts = { streetNumber: p.streetNumber, streetName: p.streetName, city: p.city, state: p.state, zip: p.zip };
+      // Jobs + their tasks (progress from task counts, like the portal).
+      const jobRows = await db.select().from(schema.jobs).where(and(eq(schema.jobs.companyId, args.companyId), eq(schema.jobs.projectId, p.id))).orderBy(asc(schema.jobs.id));
+      const svcRows = await db.select().from(schema.services).where(eq(schema.services.companyId, args.companyId));
+      const svcNameById = new Map(svcRows.map((s) => [s.id, s.name]));
+      const allTasks = await db.select().from(schema.jobTasks).where(eq(schema.jobTasks.companyId, args.companyId));
+      const flatTasks = allTasks.filter((t) => jobRows.some((j) => j.id === t.jobId));
+      const taskTitleById = new Map(flatTasks.map((t) => [t.id, t.title]));
+      // Task photos (phase evidence), kept per job; data URLs only.
+      const photoRows = (await db.select().from(schema.taskPhotos).where(eq(schema.taskPhotos.companyId, args.companyId)).orderBy(asc(schema.taskPhotos.id)))
+        .filter((ph) => taskTitleById.has(ph.taskId) && ph.photoUrl.startsWith("data:image/"));
+      const jobs = jobRows.map((j) => {
+        const tasks = sortTasks(allTasks.filter((t) => t.jobId === j.id));
+        const taskDone = tasks.filter((t) => t.status === "done").length;
+        return {
+          id: j.id, name: j.name, serviceName: j.serviceId != null ? (svcNameById.get(j.serviceId) ?? "") : "",
+          status: j.status, isRepair: j.isRepair ?? 0, startDate: j.startDate, endDate: j.endDate,
+          taskTotal: tasks.length, taskDone, progress: clientProjectProgress(tasks),
+          tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, completedAt: t.completedAt ? t.completedAt.toISOString() : null })),
+          photos: photoRows.filter((ph) => tasks.some((t) => t.id === ph.taskId)).slice(0, 30)
+            .map((ph) => ({ id: ph.id, taskId: ph.taskId, taskTitle: taskTitleById.get(ph.taskId) ?? "", stage: ph.stage, photoUrl: ph.photoUrl, createdAt: ph.createdAt.toISOString() })),
+        };
+      });
+      // Progress timeline (oldest → newest, the story of the job).
+      const feed = await db.select().from(schema.progressUpdates).where(and(eq(schema.progressUpdates.companyId, args.companyId), eq(schema.progressUpdates.projectId, p.id))).orderBy(desc(schema.progressUpdates.id)).limit(60);
+      const emps = await db.select().from(schema.employees).where(eq(schema.employees.companyId, args.companyId));
+      const em = new Map(emps.map((e) => [e.id, e.name]));
+      const timeline = feed.reverse().map((f) => ({ id: f.id, note: f.note, photoUrl: f.photoUrl, employeeName: em.get(f.employeeId) ?? "", createdAt: f.createdAt.toISOString() }));
+      // Financial summary — client-facing only: contract value + invoices.
+      const contractValue = p.estimatedValue > 0 ? p.estimatedValue : jobRows.reduce((s, j) => s + j.estimatedValue, 0);
+      const invRows = await db.select().from(schema.invoices).where(and(eq(schema.invoices.companyId, args.companyId), eq(schema.invoices.projectId, p.id))).orderBy(asc(schema.invoices.id));
+      const invoices = [];
+      let invoiced = 0; let paidTotal = 0;
+      for (const inv of invRows) {
+        const items = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, inv.id));
+        const pays = await db.select().from(schema.invoicePayments).where(eq(schema.invoicePayments.invoiceId, inv.id));
+        const total = items.reduce((s, i) => s + Math.round(i.quantity * i.unitPrice), 0);
+        const paid = pays.reduce((s, x) => s + x.amount, 0);
+        let st = inv.status;
+        if (total > 0 && paid >= total) st = "paga"; else if (paid > 0) st = "parcial"; else st = "aberta";
+        invoices.push({ id: inv.id, number: inv.number, issueDate: inv.issueDate, dueDate: inv.dueDate, status: st, total, paid, balance: total - paid });
+        invoiced += total; paidTotal += paid;
+      }
+      return {
+        from,
+        project: {
+          id: p.id, name: p.name, clientName, address: formatAddress(parts) || p.address,
+          status: p.status, scope: p.scope,
+          progress: flatTasks.length > 0 ? clientProjectProgress(flatTasks) : p.progress,
+          startDate: p.startDate, endDate: p.endDate,
+        },
+        jobs, timeline, invoices,
+        financial: { contractValue, invoiced, paid: paidTotal, balanceDue: invoiced - paidTotal },
+      };
+    },
+  }),
+
   getDashboard: defineAction({
     request: z.object({ companyId, actorId: z.number().optional() }),
     response: z.object({

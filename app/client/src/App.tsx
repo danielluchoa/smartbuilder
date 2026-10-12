@@ -3963,6 +3963,7 @@ function Projects({ cid, session, onOpen, selected, onCloseDetail, onNewInvoice,
 function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJobId, onInitialJobConsumed }: { cid: string; projectId: number; session: Session; onBack: () => void; onNewInvoice?: (clientId: number | null, projectId: number | null) => void; initialJobId?: number | null; onInitialJobConsumed?: () => void }) {
   const q = useQuery({ queryKey: ["project-detail", cid, projectId], queryFn: () => api.getProjectDetail({ companyId: cid, projectId }) });
   const [openJobId, setOpenJobId] = useState<number | null>(null);
+  const [showReport, setShowReport] = useState(false);
   /* Deep link (e.g. tapping one of today's jobs in the Field tab): open that
      job's detail as soon as the project data lands, then consume the link. */
   useEffect(() => {
@@ -4067,6 +4068,10 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
     );
   }
 
+  if (showReport) {
+    return <ClientReportView cid={cid} session={session} projectId={projectId} onBack={() => setShowReport(false)} />;
+  }
+
   return (
     <div className="space-y-4">
       <button onClick={onBack} className="text-sm font-semibold text-[#f97316]" aria-label={tr("Back to project list", "Voltar para a lista de obras", "Volver a la lista de obras")}>{tr("← Back to projects", "← Voltar para obras", "← Volver a obras")}</button>
@@ -4096,6 +4101,10 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
 
       {session.role === "admin" && onNewInvoice && (
         <button type="button" onClick={() => onNewInvoice(p.clientId, p.id)} aria-label={tr(`New invoice for project ${p.name}`, `Nova fatura para a obra ${p.name}`, `Nueva factura para la obra ${p.name}`)} className={`${btnPrimary} w-full`}>{tr("+ New invoice for this project", "+ Nova fatura para esta obra", "+ Nueva factura para esta obra")}{p.clientName ? ` — ${tr("bill to", "cobrar de", "facturar a")} ${p.clientName}` : ""}</button>
+      )}
+
+      {canManage && (
+        <button type="button" onClick={() => setShowReport(true)} aria-label={tr(`Client report for project ${p.name}`, `Relatório do cliente da obra ${p.name}`, `Informe del cliente de la obra ${p.name}`)} className={`${btnNavy} w-full`}>📄 {tr("Client report", "Relatório do cliente", "Informe del cliente")}</button>
       )}
 
       <section className="rounded-2xl border-2 border-[#f97316] bg-[var(--surface)] p-4" aria-label={tr("What to do on this project", "O que fazer nesta obra", "Qué hacer en esta obra")}>
@@ -6580,9 +6589,11 @@ function ClientProjectDetail({ cid, session, projectId, onBack }: { cid: string;
   const q = useQuery({ queryKey: ["client-project", cid, session.userId, projectId], queryFn: () => api.getClientProjectDetail({ companyId: cid, userId: session.userId, projectId }) });
   const [viewPlan, setViewPlan] = useState<ProjectPlanMeta | null>(null);
   const [photoIdx, setPhotoIdx] = useState<number | null>(null);
+  const [showReport, setShowReport] = useState(false);
   if (q.isPending) return <p className="py-10 text-center text-[var(--dim)]">{tr("Loading project…", "Carregando a obra…", "Cargando la obra…")}</p>;
   const d = q.data;
   if (!d?.project) return <div className="py-10 text-center"><p>{tr("Project not found.", "Obra não encontrada.", "Obra no encontrada.")}</p><button className={`${btnGhost} mt-3`} onClick={onBack}>{tr("Back", "Voltar", "Volver")}</button></div>;
+  if (showReport) return <ClientReportView cid={cid} session={session} projectId={projectId} onBack={() => setShowReport(false)} />;
   const p = d.project;
   return (
     <div className="space-y-4">
@@ -6596,6 +6607,7 @@ function ClientProjectDetail({ cid, session, projectId, onBack }: { cid: string;
           <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-[#f97316]" style={{ width: `${p.progress}%` }} /></div>
         </div>
       </div>
+      <button type="button" onClick={() => setShowReport(true)} aria-label={tr(`Client report for project ${p.name}`, `Relatório do cliente da obra ${p.name}`, `Informe del cliente de la obra ${p.name}`)} className={`${btnNavy} w-full`}>📄 {tr("Client report", "Relatório do cliente", "Informe del cliente")}</button>
       {p.scope && (
         <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Scope of work", "Escopo do trabalho", "Alcance del trabajo")}>
           <h3 className="font-bold">{tr("Scope of work", "Escopo do trabalho", "Alcance del trabajo")}</h3>
@@ -6692,6 +6704,198 @@ function ClientPlanViewer({ cid, session, plan, onClose }: { cid: string; sessio
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* Client report for one project — a branded, printable sheet (same print
+   pattern as the invoice sheet: .invoice-sheet + window.print). Shows the
+   work summary per job/phase, the photo record, and the client-facing
+   financial summary. Data comes from getClientReport, which is client-safe
+   by construction (no costs/profit ever leave the server). Used by the
+   manager project view and by the client portal. */
+function ClientReportView({ cid, session, projectId, onBack }: { cid: string; session: Session; projectId: number; onBack: () => void }) {
+  const q = useQuery({ queryKey: ["client-report", cid, session.userId, projectId], queryFn: () => api.getClientReport({ companyId: cid, actorId: session.userId, projectId }) });
+  if (q.isPending) return <p className="py-10 text-center text-[var(--dim)]">{tr("Loading report…", "Carregando relatório…", "Cargando informe…")}</p>;
+  const d = q.data;
+  if (!d?.project) return <div className="py-10 text-center"><p>{tr("Project not found.", "Obra não encontrada.", "Obra no encontrada.")}</p><button className={`${btnGhost} mt-3`} onClick={onBack}>{tr("Back", "Voltar", "Volver")}</button></div>;
+  const from = d.from;
+  const p = d.project;
+  const fin = d.financial;
+  const rawAccent = from?.invoiceAccentColor ?? "#F97316";
+  const accent = /^#[0-9a-fA-F]{6}$/.test(rawAccent) ? rawAccent : "#F97316";
+  const accentTint = `${accent}14`;
+  const exactPrint = { WebkitPrintColorAdjust: "exact", printColorAdjust: "exact" } as const;
+  const hasPhotos = d.timeline.length > 0 || d.jobs.some((j) => j.photos.length > 0);
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between print:hidden">
+        <button onClick={onBack} className="text-sm font-semibold text-[#f97316]" aria-label={tr("Back to project", "Voltar para a obra", "Volver a la obra")}>{tr("← Back to project", "← Voltar para a obra", "← Volver a la obra")}</button>
+        <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save the client report as PDF", "Imprimir ou salvar o relatório do cliente em PDF", "Imprimir o guardar el informe del cliente en PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
+      </div>
+
+      <article
+        className="invoice-sheet report-sheet overflow-hidden rounded-2xl border-2 bg-white p-5 text-[#12222f] shadow-sm"
+        style={{ borderColor: accent, ...exactPrint }}
+        aria-label={tr(`Client report for ${p.name}`, `Relatório do cliente de ${p.name}`, `Informe del cliente de ${p.name}`)}
+      >
+        <header className="rounded-xl px-4 py-4 text-white sm:px-5" style={{ backgroundColor: accent, color: "#ffffff", ...exactPrint }}>
+          <div className="flex items-center gap-3">
+            {from?.logoUrl ? (
+              <img src={safeImgSrc(from.logoUrl)} alt={tr(`${from?.name || session.companyName} logo`, `Logo de ${from?.name || session.companyName}`, `Logotipo de ${from?.name || session.companyName}`)} className="h-12 w-auto max-w-[140px] shrink-0 rounded-md bg-white object-contain p-1" style={{ maxHeight: 48 }} />
+            ) : null}
+            <div className="min-w-0">
+              <p className="truncate text-xl font-black uppercase leading-tight tracking-wide text-white">{from?.name || session.companyName}</p>
+              {from?.address && <p className="mt-1 text-sm font-medium text-white/95">{from.address}</p>}
+              {(from?.phone || from?.email) && <p className="text-sm text-white/85">{[from?.phone, from?.email].filter(Boolean).join(" • ")}</p>}
+            </div>
+          </div>
+        </header>
+
+        <div className="mt-5 border-b-2 pb-4" style={{ borderColor: accent }}>
+          <p className="flex items-center gap-2 text-xs font-black uppercase tracking-wider" style={{ color: accent }}>
+            <span aria-hidden="true" className="inline-block h-4 w-1 rounded-full" style={{ backgroundColor: accent, ...exactPrint }} />
+            {tr("Client report", "Relatório do cliente", "Informe del cliente")}
+          </p>
+          <h2 className="mt-2 text-2xl font-black leading-tight">{p.name}</h2>
+          {p.clientName && <p className="mt-1 text-sm text-[#334155]"><span className="font-bold">{tr("Client:", "Cliente:", "Cliente:")}</span> {p.clientName}</p>}
+          {p.address && <p className="text-sm text-[#334155]">📍 {p.address}</p>}
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[#334155]">
+            {(p.startDate || p.endDate) && <span>{fmtDate(p.startDate)} → {fmtDate(p.endDate)}</span>}
+            <span className="font-semibold">{projectStatusLabel(p.status)}</span>
+          </div>
+          <div className="mt-3">
+            <div className="flex justify-between text-xs font-semibold text-[#5b6b7a]"><span>{tr("Progress", "Andamento", "Progreso")}</span><span>{p.progress}%</span></div>
+            <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-[#e2e8f0]"><div className="h-full rounded-full" style={{ width: `${p.progress}%`, backgroundColor: accent, ...exactPrint }} /></div>
+          </div>
+          {p.scope && (
+            <div className="mt-4">
+              <p className="text-xs font-black uppercase tracking-wider text-[#5b6b7a]">{tr("Scope of work", "Escopo do trabalho", "Alcance del trabajo")}</p>
+              <p className="mt-1 whitespace-pre-line text-sm leading-relaxed">{p.scope}</p>
+            </div>
+          )}
+        </div>
+
+        <section className="mt-5" aria-label={tr("Work summary", "Resumo do trabalho", "Resumen del trabajo")}>
+          <h3 className="text-base font-black uppercase tracking-wide" style={{ color: accent }}>{tr("Work summary", "Resumo do trabalho", "Resumen del trabajo")}</h3>
+          {d.jobs.length === 0 && <p className="mt-2 text-sm text-[#5b6b7a]">{tr("No work phases have been added to this project yet.", "Nenhuma fase de trabalho foi adicionada a esta obra ainda.", "Todavía no se agregaron fases de trabajo a esta obra.")}</p>}
+          <div className="mt-3 space-y-4">
+            {d.jobs.map((j) => (
+              <div key={j.id} className="rounded-xl border border-[#e2e8f0] p-3.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <p className="font-bold leading-snug">🔧 {j.name}{j.isRepair === 1 && <span className="ml-2 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700">{tr("REPAIR", "REPARO", "REPARACIÓN")}</span>}</p>
+                  {j.serviceName && <span className="text-sm font-semibold text-[#5b6b7a]">• {j.serviceName}</span>}
+                  <span className="ml-auto text-xs font-bold uppercase tracking-wide text-[#5b6b7a]">{jobStatusLabel(j.status)}</span>
+                </div>
+                {(j.startDate || j.endDate) && <p className="mt-0.5 text-xs text-[#5b6b7a]">{fmtDate(j.startDate)} → {fmtDate(j.endDate)}</p>}
+                <div className="mt-2">
+                  <div className="flex justify-between text-xs font-semibold text-[#5b6b7a]"><span>{tr(`${j.taskDone} of ${j.taskTotal} tasks done`, `${j.taskDone} de ${j.taskTotal} tarefas concluídas`, `${j.taskDone} de ${j.taskTotal} tareas terminadas`)}</span><span>{j.progress}%</span></div>
+                  <div className="mt-1 h-2 overflow-hidden rounded-full bg-[#e2e8f0]"><div className="h-full rounded-full" style={{ width: `${j.progress}%`, backgroundColor: accent, ...exactPrint }} /></div>
+                </div>
+                {j.tasks.length > 0 && (
+                  <ul className="mt-2.5 space-y-1">
+                    {j.tasks.map((t) => (
+                      <li key={t.id} className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="min-w-0">{t.status === "done" ? "✅ " : t.status === "in_progress" ? "🔄 " : "⬜ "}{t.title}</span>
+                        <span className="shrink-0 text-xs font-semibold text-[#5b6b7a]">{taskStatusLabel(t.status)}{t.status === "done" && t.completedAt ? ` • ${fmtDate(t.completedAt)}` : ""}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="mt-6" aria-label={tr("Photo record", "Registro fotográfico", "Registro fotográfico")}>
+          <h3 className="text-base font-black uppercase tracking-wide" style={{ color: accent }}>{tr("Photo record", "Registro fotográfico", "Registro fotográfico")}</h3>
+          {!hasPhotos && <p className="mt-2 text-sm text-[#5b6b7a]">{tr("No photos have been recorded on this project yet.", "Nenhuma foto foi registrada nesta obra ainda.", "Todavía no se registraron fotos en esta obra.")}</p>}
+          {d.timeline.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-black uppercase tracking-wider text-[#5b6b7a]">{tr("Progress timeline", "Linha do tempo do andamento", "Cronología del progreso")}</p>
+              <div className="mt-2 space-y-3">
+                {d.timeline.map((f) => (
+                  <div key={f.id} className="flex gap-3 break-inside-avoid">
+                    {f.photoUrl.startsWith("data:image/") ? <img src={f.photoUrl} alt={f.note || tr("Progress photo", "Foto de andamento", "Foto de progreso")} className="h-24 w-24 shrink-0 rounded-lg object-cover" /> : null}
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-[#5b6b7a]">{fmtDate(f.createdAt)}{f.employeeName ? ` • ${f.employeeName}` : ""}</p>
+                      {f.note && <p className="mt-0.5 whitespace-pre-line text-sm leading-relaxed">{f.note}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {d.jobs.filter((j) => j.photos.length > 0).map((j) => (
+            <div key={j.id} className="mt-4">
+              <p className="text-xs font-black uppercase tracking-wider text-[#5b6b7a]">🔧 {j.name} — {tr("task photos", "fotos das tarefas", "fotos de las tareas")}</p>
+              <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {j.photos.map((ph) => (
+                  <figure key={ph.id} className="break-inside-avoid">
+                    <img src={safeImgSrc(ph.photoUrl)} alt={ph.taskTitle} className="h-32 w-full rounded-lg object-cover" />
+                    <figcaption className="mt-1 text-[11px] leading-snug text-[#5b6b7a]">
+                      <span className="font-bold uppercase" style={{ color: accent }}>{photoStageMeta(ph.stage).label}</span> • {ph.taskTitle} • {fmtDate(ph.createdAt)}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </div>
+          ))}
+        </section>
+
+        <section className="mt-6" aria-label={tr("Financial summary", "Resumo financeiro", "Resumen financiero")}>
+          <h3 className="text-base font-black uppercase tracking-wide" style={{ color: accent }}>{tr("Financial summary", "Resumo financeiro", "Resumen financiero")}</h3>
+          <div className="mt-3 flex justify-end">
+            <div className="w-full max-w-xs text-sm">
+              <dl className="space-y-1.5">
+                <div className="flex items-center justify-between px-1"><dt className="text-[#334155]">{tr("Contract value", "Valor do contrato", "Valor del contrato")}</dt><dd className="font-semibold tabular-nums">{fmtUSD(fin.contractValue)}</dd></div>
+                <div className="flex items-center justify-between px-1"><dt className="text-[#334155]">{tr("Invoiced", "Faturado", "Facturado")}</dt><dd className="font-medium tabular-nums">{fmtUSD(fin.invoiced)}</dd></div>
+                <div className="flex items-center justify-between px-1 text-green-700"><dt>{tr("Received", "Recebido", "Recibido")}</dt><dd className="font-semibold tabular-nums">{fmtUSD(fin.paid)}</dd></div>
+              </dl>
+              <div className="mt-3 flex items-center justify-between rounded-lg px-3 py-3 text-white shadow-sm" style={{ backgroundColor: accent, color: "#ffffff", ...exactPrint }}>
+                <span className="text-xs font-black uppercase tracking-wider text-white/95">{tr("Balance Due", "Saldo a pagar", "Saldo por pagar")}</span>
+                <span className="text-lg font-black leading-none tabular-nums text-white">{fmtUSD(fin.balanceDue)}</span>
+              </div>
+            </div>
+          </div>
+          {d.invoices.length > 0 ? (
+            <div className="mt-4 overflow-x-auto rounded-xl border" style={{ borderColor: `${accent}26` }}>
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-wider text-white" style={{ backgroundColor: accent, color: "#ffffff", ...exactPrint }}>
+                    <th className="px-3 py-2.5 font-black">{tr("Invoice #", "Fatura nº", "Factura n.º")}</th>
+                    <th className="px-2 py-2.5 font-black">{tr("Issued", "Emissão", "Emisión")}</th>
+                    <th className="px-2 py-2.5 font-black">{tr("Due date", "Vencimento", "Vencimiento")}</th>
+                    <th className="px-2 py-2.5 font-black">{tr("Status", "Status", "Estado")}</th>
+                    <th className="px-2 py-2.5 text-right font-black">{tr("Total", "Total", "Total")}</th>
+                    <th className="px-2 py-2.5 text-right font-black">{tr("Paid", "Pago", "Pagado")}</th>
+                    <th className="px-3 py-2.5 text-right font-black">{tr("Balance", "Saldo", "Saldo")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.invoices.map((inv, idx) => (
+                    <tr key={inv.id} className="border-b border-[#e2e8f0] last:border-b-0" style={{ backgroundColor: idx % 2 === 1 ? "#f8fafc" : "#ffffff", ...exactPrint }}>
+                      <td className="px-3 py-2.5 font-bold">{inv.number}</td>
+                      <td className="px-2 py-2.5 tabular-nums">{fmtDate(inv.issueDate)}</td>
+                      <td className="px-2 py-2.5 tabular-nums">{fmtDate(inv.dueDate)}</td>
+                      <td className="px-2 py-2.5">{invBadge(inv.status)}</td>
+                      <td className="px-2 py-2.5 text-right tabular-nums">{fmtUSD(inv.total)}</td>
+                      <td className="px-2 py-2.5 text-right tabular-nums">{fmtUSD(inv.paid)}</td>
+                      <td className="px-3 py-2.5 text-right font-bold tabular-nums">{fmtUSD(inv.balance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-[#5b6b7a]">{tr("No invoices have been issued for this project yet.", "Nenhuma fatura foi emitida para esta obra ainda.", "Todavía no se emitieron facturas para esta obra.")}</p>
+          )}
+        </section>
+
+        <footer className="mt-6 border-t border-[#e2e8f0] pt-3 text-center text-xs text-[#5b6b7a]">
+          <p>{tr("Report generated on", "Relatório gerado em", "Informe generado el")} {fmtDate(new Date().toISOString())} • {tr("Questions about this report? Contact your contractor directly.", "Dúvidas sobre este relatório? Fale diretamente com sua construtora.", "¿Dudas sobre este informe? Habla directamente con tu contratista.")}</p>
+        </footer>
+      </article>
     </div>
   );
 }

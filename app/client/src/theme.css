@@ -73,6 +73,11 @@ input, select, textarea { font-size: 16px; }
     color: #000 !important;
     break-inside: avoid;
   }
+  /* Client report sheets are long (photos, timeline) — let them flow
+     across pages instead of forcing a single page. */
+  .invoice-sheet.report-sheet {
+    break-inside: auto;
+  }
   .invoice-sheet,
   .invoice-sheet * {
     -webkit-print-color-adjust: exact !important;

@@ -1965,21 +1965,26 @@ export const Actions = {
 
   /* ================= PROJECTS ================= */
   listProjects: defineAction({
-    request: z.object({ companyId, actorId: z.number().optional() }),
+    request: z.object({ companyId, actorId: z.number() }),
     response: z.object({ projects: z.array(projectOut) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       await assertInternalActor(db, args);
       let rows = await db.select().from(schema.projects).where(eq(schema.projects.companyId, args.companyId)).orderBy(desc(schema.projects.id));
       // Employee visibility rule (Daniel, 09/10/2026): a funcionario only
-      // receives the projects he is assigned to. Admin/gerente (and legacy
-      // calls without an actor) keep the full tenant list.
-      if (args.actorId !== undefined) {
-        const actor = await getActor(db, args.companyId, args.actorId);
-        if (actor && actor.role === "funcionario") {
-          const visible = await employeeVisibleProjectIds(db, args.companyId, actor.id);
-          rows = rows.filter((p) => visible.has(p.id));
-        }
+      // receives the projects he is assigned to. FAIL CLOSED (12/10/2026):
+      // the actor is required and must resolve to an employee of this
+      // tenant — a request that cannot identify its actor (e.g. an
+      // outdated client that does not send actorId, or an id that matches
+      // nobody) gets an error, NEVER the full list. The previous legacy
+      // fallback silently returned every project in that case, which is
+      // how an employee session could still see all projects after the
+      // filter shipped. Admin/gerente keep the full tenant list.
+      const actor = await getActor(db, args.companyId, args.actorId);
+      if (!actor) throw new Error("Actor not found.");
+      if (actor.role === "funcionario") {
+        const visible = await employeeVisibleProjectIds(db, args.companyId, actor.id);
+        rows = rows.filter((p) => visible.has(p.id));
       }
       const clientRows = await db.select().from(schema.clients).where(eq(schema.clients.companyId, args.companyId));
       const cm = new Map(clientRows.map((c) => [c.id, c.name]));
@@ -2004,7 +2009,7 @@ export const Actions = {
   }),
 
   getProjectDetail: defineAction({
-    request: z.object({ companyId, projectId: z.number(), actorId: z.number().optional() }),
+    request: z.object({ companyId, projectId: z.number(), actorId: z.number() }),
     response: z.object({
       project: projectOut.nullable(),
       team: z.array(employeeOut),
@@ -2026,12 +2031,13 @@ export const Actions = {
       // Same employee visibility rule as listProjects: a funcionario cannot
       // open the detail of a project he is not assigned to (answered with
       // the not-found shape so unassigned projects stay undiscoverable).
-      if (args.actorId !== undefined) {
-        const actor = await getActor(db, args.companyId, args.actorId);
-        if (actor && actor.role === "funcionario") {
-          const visible = await employeeVisibleProjectIds(db, args.companyId, actor.id);
-          if (!visible.has(proj.id)) return { project: null, team: [], expensesTotal: 0, laborCost: 0, totalCost: 0, profit: 0, profitMargin: 0, progressFeed: [], jobs: [], jobsLabor: [] };
-        }
+      // FAIL CLOSED, same as listProjects: an actor that does not resolve
+      // to an employee of this tenant is an error, never full access.
+      const actor = await getActor(db, args.companyId, args.actorId);
+      if (!actor) throw new Error("Actor not found.");
+      if (actor.role === "funcionario") {
+        const visible = await employeeVisibleProjectIds(db, args.companyId, actor.id);
+        if (!visible.has(proj.id)) return { project: null, team: [], expensesTotal: 0, laborCost: 0, totalCost: 0, profit: 0, profitMargin: 0, progressFeed: [], jobs: [], jobsLabor: [] };
       }
       const cl = proj.clientId ? await db.select().from(schema.clients).where(eq(schema.clients.id, proj.clientId)).limit(1) : [];
       const assigns = await db.select().from(schema.assignments).where(eq(schema.assignments.projectId, args.projectId));

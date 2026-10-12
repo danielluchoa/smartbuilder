@@ -2528,7 +2528,7 @@ type DispatchAssignCtx = { task: TaskLite; jobName: string; projectName: string;
 type DispatchCrewCtx = { jobId: number; jobName: string; projectId: number; crewIds: number[] };
 
 function dispatchTaskUnassigned(task: TaskLite, crewCount: number): boolean {
-  return taskAssigneeIds(task).length === 0 && crewCount === 0;
+  return taskAssigneeIds(task).length === 0 && (task.teamIds ?? []).length === 0 && crewCount === 0;
 }
 function shiftDateStr(dateStr: string, days: number): string {
   const d = new Date(`${dateStr}T12:00:00`);

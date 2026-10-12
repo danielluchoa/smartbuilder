@@ -1164,6 +1164,13 @@ function resolveAssigneeIds(args: { assigneeIds?: number[]; assigneeId?: number 
 async function taskVisibleTo(db: CtxDb, cid: string, employeeId: number, task: JobTaskRow, knownIds?: number[]): Promise<boolean> {
   const ids = knownIds ?? (await taskAssigneeIds(db, cid, task));
   if (ids.includes(employeeId)) return true;
+  // Team assignment: members of a team assigned to this task can see it,
+  // even when they are not listed as individual assignees.
+  const teamRows = await db.select().from(schema.taskTeams).where(and(eq(schema.taskTeams.companyId, cid), eq(schema.taskTeams.taskId, task.id)));
+  if (teamRows.length > 0) {
+    const memberRows = await db.select().from(schema.teamMembers).where(and(eq(schema.teamMembers.companyId, cid), inArray(schema.teamMembers.teamId, teamRows.map((r) => r.teamId))));
+    if (memberRows.some((m) => m.employeeId === employeeId)) return true;
+  }
   if (ids.length > 0) return false;
   const emp = await db.select().from(schema.employees).where(and(eq(schema.employees.companyId, cid), eq(schema.employees.id, employeeId))).limit(1);
   if (emp[0] && (emp[0].role === "admin" || emp[0].role === "gerente")) return true;
@@ -2104,7 +2111,7 @@ export const Actions = {
         const jobs = jobRows.filter((j) => j.projectId === p.id).map((j) => {
           const crew = crewByJob.get(j.id) ?? [];
           const tasks = sortTasks(tasksByJob.get(j.id) ?? []);
-          const jobUnassigned = tasks.filter((t) => t.assigneeIds.length === 0 && crew.length === 0).length;
+          const jobUnassigned = tasks.filter((t) => t.assigneeIds.length === 0 && (t.teamIds ?? []).length === 0 && crew.length === 0).length;
           unassignedCount += jobUnassigned;
           totalTasks += tasks.length;
           const svc = j.serviceId != null ? svcById.get(j.serviceId) : undefined;

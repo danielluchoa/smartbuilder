@@ -217,6 +217,11 @@ async function collectTenantData(db: CtxDb, cid: string): Promise<TenantDataset>
     jobs: strip(raw(await db.select().from(schema.jobs).where(eq(schema.jobs.companyId, cid)))),
     job_tasks: strip(raw(await db.select().from(schema.jobTasks).where(eq(schema.jobTasks.companyId, cid)))),
     task_assignees: strip(raw(await db.select().from(schema.taskAssignees).where(eq(schema.taskAssignees.companyId, cid)))),
+    teams: strip(raw(await db.select().from(schema.teams).where(eq(schema.teams.companyId, cid)))),
+    team_members: strip(raw(await db.select().from(schema.teamMembers).where(eq(schema.teamMembers.companyId, cid)))),
+    job_teams: strip(raw(await db.select().from(schema.jobTeams).where(eq(schema.jobTeams.companyId, cid)))),
+    task_teams: strip(raw(await db.select().from(schema.taskTeams).where(eq(schema.taskTeams.companyId, cid)))),
+    distribution_days: strip(raw(await db.select().from(schema.distributionDays).where(eq(schema.distributionDays.companyId, cid)))),
     task_photos: strip(raw(await db.select().from(schema.taskPhotos).where(eq(schema.taskPhotos.companyId, cid)))),
     assignments: strip(raw(await db.select().from(schema.assignments).where(eq(schema.assignments.companyId, cid)))),
     timesheets: strip(raw(await db.select().from(schema.timesheets).where(eq(schema.timesheets.companyId, cid)))),
@@ -976,6 +981,10 @@ const jobTaskOut = z.object({
   assigneeIds: z.array(z.number()), assigneeNames: z.array(z.string()),
   // Legacy single-assignee mirror (first id / joined names) for back-compat.
   assigneeId: z.number().nullable(), assigneeName: z.string(),
+  // Teams assigned to this task (task_teams). Effective assignees =
+  // assigneeIds ∪ members of these teams; payroll/visibility keep using
+  // the individual assignees only (see schema.ts).
+  teamIds: z.array(z.number()),
   status: z.string(),
   createdAt: z.string(), startedAt: z.string().nullable(), completedAt: z.string().nullable(),
   sortOrder: z.number(),
@@ -988,10 +997,26 @@ const jobTaskOut = z.object({
 type JobTaskRow = typeof schema.jobTasks.$inferSelect;
 type TaskOut = z.infer<typeof jobTaskOut>;
 const dispatchCrewMemberOut = z.object({ id: z.number(), name: z.string(), trade: z.string() });
+
+/* ---------- Teams & distribution plan ---------- */
+const teamOut = z.object({
+  id: z.number(), name: z.string(),
+  memberIds: z.array(z.number()), memberNames: z.array(z.string()),
+});
+const distributionEntryOut = z.object({
+  id: z.number(), date: z.string(), jobId: z.number(), jobName: z.string(), projectName: z.string(),
+  teamId: z.number().nullable(), teamName: z.string(),
+  employeeId: z.number().nullable(), employeeName: z.string(),
+  taskId: z.number().nullable(), taskTitle: z.string(), notes: z.string(),
+});
+const distributionDayOut = z.object({ date: z.string(), entries: z.array(distributionEntryOut) });
+const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
+
 const dispatchJobOut = z.object({
   jobId: z.number(), jobName: z.string(), serviceName: z.string(), serviceUnit: z.string(),
   jobStatus: z.string(), startDate: z.string(), endDate: z.string(),
   crew: z.array(dispatchCrewMemberOut),
+  teamIds: z.array(z.number()), // standing team associations (job_teams)
   tasks: z.array(jobTaskOut),
   taskTotal: z.number(), taskDone: z.number(), unassignedCount: z.number(),
 });
@@ -1035,6 +1060,15 @@ async function tasksToOut(db: CtxDb, cid: string, taskRows: JobTaskRow[], actorI
     arr.push(ph);
     photosByTask.set(ph.taskId, arr);
   }
+  // Teams assigned per task (task_teams) — alongside individual assignees.
+  const taskTeamRows = (await db.select().from(schema.taskTeams).where(eq(schema.taskTeams.companyId, cid)))
+    .filter((r) => taskIds.has(r.taskId));
+  const teamsByTask = new Map<number, number[]>();
+  for (const r of taskTeamRows) {
+    const arr = teamsByTask.get(r.taskId) ?? [];
+    if (!arr.includes(r.teamId)) arr.push(r.teamId);
+    teamsByTask.set(r.taskId, arr);
+  }
   // Logged work time per task: closed segments carry minutes; a running
   // timer contributes its elapsed time so the total is always current.
   const timeRows = (await db.select().from(schema.taskTimeLogs).where(eq(schema.taskTimeLogs.companyId, cid)))
@@ -1061,6 +1095,7 @@ async function tasksToOut(db: CtxDb, cid: string, taskRows: JobTaskRow[], actorI
       title: t.title, notes: t.notes,
       assigneeIds: aIds, assigneeNames: aNames,
       assigneeId: aIds[0] ?? null, assigneeName: aNames.join(", "),
+      teamIds: teamsByTask.get(t.id) ?? [],
       status: t.status,
       createdAt: t.createdAt.toISOString(),
       startedAt: t.startedAt?.toISOString() ?? null,
@@ -1148,6 +1183,72 @@ async function requireTask(db: CtxDb, cid: string, taskId: number): Promise<JobT
   const rows = await db.select().from(schema.jobTasks).where(and(eq(schema.jobTasks.companyId, cid), eq(schema.jobTasks.id, taskId))).limit(1);
   if (!rows[0]) throw new Error("Task not found");
   return rows[0];
+}
+
+/* ---------- Teams ---------- */
+type TeamRow = typeof schema.teams.$inferSelect;
+async function requireTeam(db: CtxDb, cid: string, teamId: number): Promise<TeamRow> {
+  const rows = await db.select().from(schema.teams).where(and(eq(schema.teams.companyId, cid), eq(schema.teams.id, teamId))).limit(1);
+  if (!rows[0]) throw new Error("Team not found");
+  return rows[0];
+}
+/* Validates that every id in `ids` is a team of this company. */
+async function requireTeams(db: CtxDb, cid: string, ids: number[]): Promise<void> {
+  const clean = [...new Set(ids.filter((n) => Number.isFinite(n)))];
+  if (clean.length === 0) return;
+  const rows = await db.select().from(schema.teams).where(eq(schema.teams.companyId, cid));
+  const valid = new Set(rows.map((t) => t.id));
+  for (const id of clean) if (!valid.has(id)) throw new Error("Team not found in this company");
+}
+/* Builds the API-shaped team list (members resolved to id+name). */
+async function teamsToOut(db: CtxDb, cid: string): Promise<Array<{ id: number; name: string; memberIds: number[]; memberNames: string[] }>> {
+  const teamRows = await db.select().from(schema.teams).where(eq(schema.teams.companyId, cid)).orderBy(asc(schema.teams.name));
+  const memberRows = await db.select().from(schema.teamMembers).where(eq(schema.teamMembers.companyId, cid));
+  const emps = await db.select().from(schema.employees).where(eq(schema.employees.companyId, cid));
+  const empById = new Map(emps.map((e) => [e.id, e]));
+  const memberIdsByTeam = new Map<number, number[]>();
+  for (const m of memberRows) {
+    const arr = memberIdsByTeam.get(m.teamId) ?? [];
+    if (!arr.includes(m.employeeId)) arr.push(m.employeeId);
+    memberIdsByTeam.set(m.teamId, arr);
+  }
+  return teamRows.map((t) => {
+    const mIds = (memberIdsByTeam.get(t.id) ?? []).filter((id) => empById.has(id));
+    return { id: t.id, name: t.name, memberIds: mIds, memberNames: mIds.map((id) => empById.get(id)!.name) };
+  });
+}
+/* Employees that may belong to a team: active, non-client. */
+async function requireAssignableEmployees(db: CtxDb, cid: string, ids: number[]): Promise<void> {
+  const clean = [...new Set(ids.filter((n) => Number.isFinite(n)))];
+  if (clean.length === 0) return;
+  const emps = await db.select().from(schema.employees).where(eq(schema.employees.companyId, cid));
+  const byId = new Map(emps.map((e) => [e.id, e]));
+  for (const id of clean) {
+    const e = byId.get(id);
+    if (!e || e.status !== "ativo" || e.role === "cliente") throw new Error("Only active non-client employees can join a team");
+  }
+}
+async function requireJob(db: CtxDb, cid: string, jobId: number) {
+  const rows = await db.select().from(schema.jobs).where(and(eq(schema.jobs.companyId, cid), eq(schema.jobs.id, jobId))).limit(1);
+  if (!rows[0]) throw new Error("Job not found");
+  return rows[0];
+}
+/* Builds one API-shaped distribution entry with names resolved. */
+function distributionEntryToOut(
+  e: typeof schema.distributionDays.$inferSelect,
+  jobNameById: Map<number, string>, projectIdByJobId: Map<number, number>,
+  projNameById: Map<number, string>, teamNameById: Map<number, string>,
+  empNameById: Map<number, string>, taskTitleById: Map<number, string>,
+): { id: number; date: string; jobId: number; jobName: string; projectName: string; teamId: number | null; teamName: string; employeeId: number | null; employeeName: string; taskId: number | null; taskTitle: string; notes: string } {
+  return {
+    id: e.id, date: e.date, jobId: e.jobId,
+    jobName: jobNameById.get(e.jobId) ?? "",
+    projectName: projNameById.get(projectIdByJobId.get(e.jobId) ?? 0) ?? "",
+    teamId: e.teamId, teamName: e.teamId != null ? (teamNameById.get(e.teamId) ?? "") : "",
+    employeeId: e.employeeId, employeeName: e.employeeId != null ? (empNameById.get(e.employeeId) ?? "") : "",
+    taskId: e.taskId, taskTitle: e.taskId != null ? (taskTitleById.get(e.taskId) ?? "") : "",
+    notes: e.notes,
+  };
 }
 
 /* ---------- notifications (in-app; push comes with the native app) ---------- */
@@ -1945,8 +2046,12 @@ export const Actions = {
      job has no crew yet — once a crew exists, a null assignee means the
      whole crew covers it (see Dispatch UI). */
   getDispatch: defineAction({
-    request: z.object({ companyId, actorId: z.number(), date: z.string().optional() }),
-    response: z.object({ projects: z.array(dispatchProjectOut), unassignedCount: z.number(), totalTasks: z.number() }),
+    request: z.object({ companyId, actorId: z.number(), date: z.string().optional(), weekStart: dateStr.optional() }),
+    response: z.object({
+      projects: z.array(dispatchProjectOut), unassignedCount: z.number(), totalTasks: z.number(),
+      teams: z.array(teamOut), // all company teams (for the Teams manager + pickers)
+      days: z.array(distributionDayOut), // 7 days starting at weekStart (empty when weekStart omitted)
+    }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       await assertInternalActor(db, args);
@@ -1976,6 +2081,14 @@ export const Actions = {
         if (!arr.some((c) => c.id === emp.id)) arr.push({ id: emp.id, name: emp.name, trade: emp.trade });
         crewByJob.set(a.jobId, arr);
       }
+      // Standing team associations per job (job_teams)
+      const jobTeamRows = await db.select().from(schema.jobTeams).where(eq(schema.jobTeams.companyId, args.companyId));
+      const teamIdsByJob = new Map<number, number[]>();
+      for (const r of jobTeamRows) {
+        const arr = teamIdsByJob.get(r.jobId) ?? [];
+        if (!arr.includes(r.teamId)) arr.push(r.teamId);
+        teamIdsByJob.set(r.jobId, arr);
+      }
       const taskRows = (await db.select().from(schema.jobTasks).where(eq(schema.jobTasks.companyId, args.companyId)))
         .filter((t) => jobIds.has(t.jobId));
       const tasksOut = await tasksToOut(db, args.companyId, taskRows, args.actorId);
@@ -1998,12 +2111,303 @@ export const Actions = {
           return {
             jobId: j.id, jobName: j.name, serviceName: svc?.name ?? "", serviceUnit: svc?.unit ?? "",
             jobStatus: j.status, startDate: j.startDate, endDate: j.endDate,
-            crew, tasks, taskTotal: tasks.length, taskDone: tasks.filter((t) => t.status === "done").length, unassignedCount: jobUnassigned,
+            crew, teamIds: teamIdsByJob.get(j.id) ?? [],
+            tasks, taskTotal: tasks.length, taskDone: tasks.filter((t) => t.status === "done").length, unassignedCount: jobUnassigned,
           };
         });
         return { projectId: p.id, projectName: p.name, projectStatus: p.status, jobs };
       }).filter((p) => p.jobs.length > 0);
-      return { projects, unassignedCount, totalTasks };
+      // Teams list for the manager UI
+      const teams = await teamsToOut(db, args.companyId);
+      // Weekly distribution plan: 7 days from weekStart with entries resolved
+      const days: Array<{ date: string; entries: ReturnType<typeof distributionEntryToOut>[] }> = [];
+      if (args.weekStart) {
+        const weekDates: string[] = [];
+        const d = new Date(`${args.weekStart}T12:00:00`);
+        for (let i = 0; i < 7; i++) {
+          weekDates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+          d.setDate(d.getDate() + 1);
+        }
+        const entryRows = (await db.select().from(schema.distributionDays).where(eq(schema.distributionDays.companyId, args.companyId)))
+          .filter((r) => weekDates.includes(r.date));
+        const jobNameById = new Map(jobRowsAll.map((j) => [j.id, j.name]));
+        const projectIdByJobId = new Map(jobRowsAll.map((j) => [j.id, j.projectId]));
+        const projNameById = new Map(projRows.map((p) => [p.id, p.name]));
+        const teamNameById = new Map(teams.map((t) => [t.id, t.name]));
+        const empNameById = new Map(empRows.map((e) => [e.id, e.name]));
+        const allTaskRows = await db.select().from(schema.jobTasks).where(eq(schema.jobTasks.companyId, args.companyId));
+        const taskTitleById = new Map(allTaskRows.map((t) => [t.id, t.title]));
+        for (const wd of weekDates) {
+          days.push({
+            date: wd,
+            entries: entryRows.filter((r) => r.date === wd)
+              .map((r) => distributionEntryToOut(r, jobNameById, projectIdByJobId, projNameById, teamNameById, empNameById, taskTitleById))
+              .sort((a, b) => a.jobName.localeCompare(b.jobName) || a.id - b.id),
+          });
+        }
+      }
+      return { projects, unassignedCount, totalTasks, teams, days };
+    },
+  }),
+
+  /* ================= TEAMS ================= */
+  listTeams: defineAction({
+    request: z.object({ companyId, actorId: z.number() }),
+    response: z.object({ teams: z.array(teamOut) }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await requireManager(db, args.companyId, args.actorId);
+      return { teams: await teamsToOut(db, args.companyId) };
+    },
+  }),
+
+  createTeam: defineAction({
+    request: z.object({ companyId, actorId: z.number(), name: z.string().trim().min(1).max(191) }),
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const r = await db.insert(schema.teams).values({ companyId: args.companyId, name: args.name.trim(), createdAt: new Date() }).$returningId();
+      ctx.invalidateQueries();
+      return { id: r[0]!.id };
+    },
+  }),
+
+  renameTeam: defineAction({
+    request: z.object({ companyId, actorId: z.number(), teamId: z.number(), name: z.string().trim().min(1).max(191) }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      await requireTeam(db, args.companyId, args.teamId);
+      await db.update(schema.teams).set({ name: args.name.trim() })
+        .where(and(eq(schema.teams.companyId, args.companyId), eq(schema.teams.id, args.teamId)));
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  deleteTeam: defineAction({
+    request: z.object({ companyId, actorId: z.number(), teamId: z.number() }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      await requireTeam(db, args.companyId, args.teamId);
+      const cid = args.companyId, tid = args.teamId;
+      await db.delete(schema.teamMembers).where(and(eq(schema.teamMembers.companyId, cid), eq(schema.teamMembers.teamId, tid)));
+      await db.delete(schema.jobTeams).where(and(eq(schema.jobTeams.companyId, cid), eq(schema.jobTeams.teamId, tid)));
+      await db.delete(schema.taskTeams).where(and(eq(schema.taskTeams.companyId, cid), eq(schema.taskTeams.teamId, tid)));
+      await db.delete(schema.distributionDays).where(and(eq(schema.distributionDays.companyId, cid), eq(schema.distributionDays.teamId, tid)));
+      await db.delete(schema.teams).where(and(eq(schema.teams.companyId, cid), eq(schema.teams.id, tid)));
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  /* Replace the whole member list of a team (manager picks from a search). */
+  setTeamMembers: defineAction({
+    request: z.object({ companyId, actorId: z.number(), teamId: z.number(), employeeIds: z.array(z.number()) }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      await requireTeam(db, args.companyId, args.teamId);
+      await requireAssignableEmployees(db, args.companyId, args.employeeIds);
+      const ids = [...new Set(args.employeeIds.filter((n) => Number.isFinite(n)))];
+      await db.delete(schema.teamMembers).where(and(eq(schema.teamMembers.companyId, args.companyId), eq(schema.teamMembers.teamId, args.teamId)));
+      for (const employeeId of ids) {
+        await db.insert(schema.teamMembers).values({ companyId: args.companyId, teamId: args.teamId, employeeId });
+      }
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  /* Standing association: which teams usually work a job (many per job). */
+  setJobTeams: defineAction({
+    request: z.object({ companyId, actorId: z.number(), jobId: z.number(), teamIds: z.array(z.number()) }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      await requireJob(db, args.companyId, args.jobId);
+      await requireTeams(db, args.companyId, args.teamIds);
+      const ids = [...new Set(args.teamIds.filter((n) => Number.isFinite(n)))];
+      await db.delete(schema.jobTeams).where(and(eq(schema.jobTeams.companyId, args.companyId), eq(schema.jobTeams.jobId, args.jobId)));
+      for (const teamId of ids) {
+        await db.insert(schema.jobTeams).values({ companyId: args.companyId, jobId: args.jobId, teamId });
+      }
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  /* Assign whole teams to a task (alongside individual assignees). */
+  setTaskTeams: defineAction({
+    request: z.object({ companyId, actorId: z.number(), taskId: z.number(), teamIds: z.array(z.number()) }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      await requireTask(db, args.companyId, args.taskId);
+      await requireTeams(db, args.companyId, args.teamIds);
+      const ids = [...new Set(args.teamIds.filter((n) => Number.isFinite(n)))];
+      await db.delete(schema.taskTeams).where(and(eq(schema.taskTeams.companyId, args.companyId), eq(schema.taskTeams.taskId, args.taskId)));
+      for (const teamId of ids) {
+        await db.insert(schema.taskTeams).values({ companyId: args.companyId, taskId: args.taskId, teamId });
+      }
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  /* ================= DISTRIBUTION PLAN ================= */
+  /* One day-plan row: on `date`, at `jobId`, this team (or this individual)
+     works on `taskId` (or the whole job when taskId is null). */
+  saveDistributionEntry: defineAction({
+    request: z.object({
+      companyId, actorId: z.number(), date: dateStr, jobId: z.number(),
+      teamId: z.number().nullable().optional(), employeeId: z.number().nullable().optional(),
+      taskId: z.number().nullable().optional(), notes: z.string().max(500).default(""),
+    }),
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      if (args.teamId == null && args.employeeId == null) throw new Error("Pick a team or a person for this plan row.");
+      const job = await requireJob(db, args.companyId, args.jobId);
+      if (args.teamId != null) await requireTeam(db, args.companyId, args.teamId);
+      if (args.employeeId != null) await requireAssignableEmployees(db, args.companyId, [args.employeeId]);
+      if (args.taskId != null) {
+        const task = await requireTask(db, args.companyId, args.taskId);
+        if (task.jobId !== job.id) throw new Error("That task does not belong to this job.");
+      }
+      const r = await db.insert(schema.distributionDays).values({
+        companyId: args.companyId, date: args.date, jobId: args.jobId,
+        teamId: args.teamId ?? null, employeeId: args.employeeId ?? null,
+        taskId: args.taskId ?? null, notes: (args.notes ?? "").trim(),
+      }).$returningId();
+      ctx.invalidateQueries();
+      return { id: r[0]!.id };
+    },
+  }),
+
+  deleteDistributionEntry: defineAction({
+    request: z.object({ companyId, actorId: z.number(), id: z.number() }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const rows = await db.select().from(schema.distributionDays)
+        .where(and(eq(schema.distributionDays.companyId, args.companyId), eq(schema.distributionDays.id, args.id))).limit(1);
+      if (!rows[0]) throw new Error("Plan row not found");
+      await db.delete(schema.distributionDays).where(and(eq(schema.distributionDays.companyId, args.companyId), eq(schema.distributionDays.id, args.id)));
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  /* Duplicate a whole day's plan rows onto other days (skips exact dups). */
+  copyDistribution: defineAction({
+    request: z.object({ companyId, actorId: z.number(), fromDate: dateStr, toDates: z.array(dateStr).min(1).max(7) }),
+    response: z.object({ copied: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const rows = await db.select().from(schema.distributionDays).where(eq(schema.distributionDays.companyId, args.companyId));
+      const source = rows.filter((r) => r.date === args.fromDate);
+      const targets = [...new Set(args.toDates)].filter((d) => d !== args.fromDate);
+      if (source.length === 0 || targets.length === 0) return { copied: 0 };
+      const existing = new Set(rows.map((r) => `${r.date}|${r.jobId}|${r.teamId ?? ""}|${r.employeeId ?? ""}|${r.taskId ?? ""}`));
+      let copied = 0;
+      for (const toDate of targets) {
+        for (const s of source) {
+          const key = `${toDate}|${s.jobId}|${s.teamId ?? ""}|${s.employeeId ?? ""}|${s.taskId ?? ""}`;
+          if (existing.has(key)) continue;
+          await db.insert(schema.distributionDays).values({
+            companyId: args.companyId, date: toDate, jobId: s.jobId,
+            teamId: s.teamId, employeeId: s.employeeId, taskId: s.taskId, notes: s.notes,
+          });
+          existing.add(key);
+          copied++;
+        }
+      }
+      ctx.invalidateQueries();
+      return { copied };
+    },
+  }),
+
+  /* Remove every plan row of one day. */
+  clearDistribution: defineAction({
+    request: z.object({ companyId, actorId: z.number(), date: dateStr }),
+    response: z.object({ deleted: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      await assertTenantWritable(db, args.companyId);
+      await requireManager(db, args.companyId, args.actorId);
+      const rows = await db.select().from(schema.distributionDays)
+        .where(and(eq(schema.distributionDays.companyId, args.companyId), eq(schema.distributionDays.date, args.date)));
+      if (rows.length > 0) {
+        await db.delete(schema.distributionDays)
+          .where(and(eq(schema.distributionDays.companyId, args.companyId), eq(schema.distributionDays.date, args.date)));
+      }
+      ctx.invalidateQueries();
+      return { deleted: rows.length };
+    },
+  }),
+
+  /* Employee view: the day's plan rows that involve this employee —
+     directly, or through one of their teams. Employee-accessible. */
+  getMyDayPlan: defineAction({
+    request: z.object({ companyId, employeeId: z.number(), date: dateStr }),
+    response: z.object({ date: z.string(), entries: z.array(distributionEntryOut) }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await assertInternalActor(db, args);
+      const myTeamIds = new Set(
+        (await db.select().from(schema.teamMembers).where(eq(schema.teamMembers.companyId, args.companyId)))
+          .filter((m) => m.employeeId === args.employeeId).map((m) => m.teamId),
+      );
+      const rows = (await db.select().from(schema.distributionDays).where(eq(schema.distributionDays.companyId, args.companyId)))
+        .filter((r) => r.date === args.date && (r.employeeId === args.employeeId || (r.teamId !== null && myTeamIds.has(r.teamId))));
+      const jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.companyId, args.companyId));
+      const projs = await db.select().from(schema.projects).where(eq(schema.projects.companyId, args.companyId));
+      const teamRows = await db.select().from(schema.teams).where(eq(schema.teams.companyId, args.companyId));
+      const emps = await db.select().from(schema.employees).where(eq(schema.employees.companyId, args.companyId));
+      const taskRows = await db.select().from(schema.jobTasks).where(eq(schema.jobTasks.companyId, args.companyId));
+      const entries = rows
+        .map((r) => distributionEntryToOut(
+          r,
+          new Map(jobs.map((j) => [j.id, j.name])),
+          new Map(jobs.map((j) => [j.id, j.projectId])),
+          new Map(projs.map((p) => [p.id, p.name])),
+          new Map(teamRows.map((t) => [t.id, t.name])),
+          new Map(emps.map((e) => [e.id, e.name])),
+          new Map(taskRows.map((t) => [t.id, t.title])),
+        ))
+        .sort((a, b) => a.jobName.localeCompare(b.jobName) || a.id - b.id);
+      return { date: args.date, entries };
     },
   }),
 

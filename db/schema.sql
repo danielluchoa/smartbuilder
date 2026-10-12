@@ -213,6 +213,69 @@ CREATE TABLE task_assignees (
   KEY idx_task_assignees_company (company_id)
 ) ENGINE=InnoDB;
 
+-- Teams: named groups of employees, managed per tenant.
+CREATE TABLE teams (
+  id          INT NOT NULL AUTO_INCREMENT,
+  company_id  VARCHAR(64) NOT NULL,
+  name        VARCHAR(191) NOT NULL,
+  created_at  BIGINT NOT NULL,  -- ms epoch
+  PRIMARY KEY (id),
+  KEY idx_teams_company (company_id)
+) ENGINE=InnoDB;
+
+-- Team members: one row per (team, employee).
+CREATE TABLE team_members (
+  id          INT NOT NULL AUTO_INCREMENT,
+  company_id  VARCHAR(64) NOT NULL,
+  team_id     INT NOT NULL,
+  employee_id INT NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_team_members (team_id, employee_id),
+  KEY idx_team_members_team (team_id),
+  KEY idx_team_members_company (company_id)
+) ENGINE=InnoDB;
+
+-- Job teams: standing association of teams to a job (many teams per job).
+CREATE TABLE job_teams (
+  id          INT NOT NULL AUTO_INCREMENT,
+  company_id  VARCHAR(64) NOT NULL,
+  job_id      INT NOT NULL,
+  team_id     INT NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_job_teams (job_id, team_id),
+  KEY idx_job_teams_job (job_id),
+  KEY idx_job_teams_company (company_id)
+) ENGINE=InnoDB;
+
+-- Task teams: assign a whole team to a task (alongside individuals).
+CREATE TABLE task_teams (
+  id          INT NOT NULL AUTO_INCREMENT,
+  company_id  VARCHAR(64) NOT NULL,
+  task_id     INT NOT NULL,
+  team_id     INT NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_task_teams (task_id, team_id),
+  KEY idx_task_teams_task (task_id),
+  KEY idx_task_teams_company (company_id)
+) ENGINE=InnoDB;
+
+-- Distribution plan: who works where on a given day.
+-- One row = on `date`, at `job_id`, this team (or individual) works on
+-- `task_id` (or the whole job when task_id is NULL).
+CREATE TABLE distribution_days (
+  id          INT NOT NULL AUTO_INCREMENT,
+  company_id  VARCHAR(64) NOT NULL,
+  date        VARCHAR(10) NOT NULL,  -- YYYY-MM-DD
+  job_id      INT NOT NULL,
+  team_id     INT NULL,
+  employee_id INT NULL,
+  task_id     INT NULL,
+  notes       TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (id),
+  KEY idx_distribution_days_company_date (company_id, date),
+  KEY idx_distribution_days_job (job_id)
+) ENGINE=InnoDB;
+
 -- Photos attached to a task (Before / During / After). photo_url is an
 -- inline device image (data:image/...), never an external URL.
 CREATE TABLE task_photos (

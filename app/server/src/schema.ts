@@ -186,6 +186,67 @@ export const taskAssignees = mysqlTable("task_assignees", {
   employeeId: int("employee_id").notNull(),
 });
 
+// --- Teams (crews grouped by the manager inside the company) ---
+// A team is a named group of employees. Teams can be associated to jobs
+// (standing association: job_teams — the teams that usually work that job)
+// and assigned to individual tasks (task_teams) alongside individual
+// assignees (task_assignees).
+//
+// ASSIGNEE SEMANTICS (documented once, used everywhere):
+//   effective assignees of a task = individual taskAssignees ∪ members of
+//   task_teams.
+// Payroll, task visibility (taskVisibleTo) and progress keep using the
+// task's individual assignees only — team assignment is an operational
+// shortcut for the daily distribution plan, it does not rewrite payroll.
+// The daily distribution (distribution_days) is operational planning:
+// it says who goes where on a given day; payroll follows the task's
+// assignees, not the day plan.
+export const teams = mysqlTable("teams", {
+  id: int("id").primaryKey().autoincrement(),
+  companyId: varchar("company_id", { length: 64 }).notNull(),
+  name: varchar("name", { length: 191 }).notNull(),
+  createdAt: timestampMs("created_at").notNull().$defaultFn(() => new Date()),
+});
+
+// --- Team members: one row per (team, employee) ---
+export const teamMembers = mysqlTable("team_members", {
+  id: int("id").primaryKey().autoincrement(),
+  companyId: varchar("company_id", { length: 64 }).notNull(),
+  teamId: int("team_id").notNull(),
+  employeeId: int("employee_id").notNull(),
+});
+
+// --- Job teams: standing association of teams to a job (many teams per job) ---
+export const jobTeams = mysqlTable("job_teams", {
+  id: int("id").primaryKey().autoincrement(),
+  companyId: varchar("company_id", { length: 64 }).notNull(),
+  jobId: int("job_id").notNull(),
+  teamId: int("team_id").notNull(),
+});
+
+// --- Task teams: assign a whole team to a task (alongside individuals) ---
+export const taskTeams = mysqlTable("task_teams", {
+  id: int("id").primaryKey().autoincrement(),
+  companyId: varchar("company_id", { length: 64 }).notNull(),
+  taskId: int("task_id").notNull(),
+  teamId: int("team_id").notNull(),
+});
+
+// --- Distribution plan: who works where on a given day ---
+// One row = on `date`, at `jobId`, this team (or this individual employee)
+// works on `taskId` (or on the whole job when taskId is null).
+// Exactly one of teamId / employeeId must be set; notes is free text.
+export const distributionDays = mysqlTable("distribution_days", {
+  id: int("id").primaryKey().autoincrement(),
+  companyId: varchar("company_id", { length: 64 }).notNull(),
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD
+  jobId: int("job_id").notNull(),
+  teamId: int("team_id"),
+  employeeId: int("employee_id"),
+  taskId: int("task_id"),
+  notes: text("notes").notNull().default(""),
+});
+
 // --- Photos attached to a task (Before / During / After the work) ---
 // photoUrl follows the progress_updates pattern: inline device image
 // (data:image/...), never an external URL.

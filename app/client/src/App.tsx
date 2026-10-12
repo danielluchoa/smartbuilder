@@ -4,7 +4,7 @@ import { api } from "./api";
 import { GeoMap } from "./GeoMap";
 import { makeStyledInvoicePdf } from "./invoicePdf";
 import { enqueueOutbox, isOffline, setOutboxSyncedHandler, startOutboxAutoSync, syncOutbox, useOnline, useOutboxItems } from "./offline";
-import { LanguageContext, LanguageToggle, langDocValue, setCurrentLang, tr, useLanguage, type Lang } from "./i18n";
+import { LanguageContext, LanguageToggle, getCurrentLang, langDocValue, setCurrentLang, tr, useLanguage, type Lang } from "./i18n";
 import logoBadge from "./assets/logo-badge.png";
 import logoFull from "./assets/logo-full.png";
 
@@ -422,9 +422,23 @@ type TaskLite = {
   title: string; notes: string;
   assigneeIds: number[]; assigneeNames: string[];
   assigneeId: number | null; assigneeName: string; status: string;
+  teamIds: number[]; // teams assigned to this task (alongside individual assignees)
   createdAt: string; startedAt: string | null; completedAt: string | null; sortOrder: number; photos: TaskPhotoLite[];
   totalMinutes: number; timerRunning: boolean; timerStartedAt: string | null;
 };
+
+/* Teams & distribution plan (manager's Dispatch tab). A team is a named
+   group of employees; teams can be linked to jobs (standing) and to tasks
+   (alongside individuals). The daily distribution plan is operational:
+   payroll follows the task's assignees, not the day plan. */
+type TeamLite = { id: number; name: string; memberIds: number[]; memberNames: string[] };
+type DistributionEntryLite = {
+  id: number; date: string; jobId: number; jobName: string; projectName: string;
+  teamId: number | null; teamName: string;
+  employeeId: number | null; employeeName: string;
+  taskId: number | null; taskTitle: string; notes: string;
+};
+type DistributionDayLite = { date: string; entries: DistributionEntryLite[] };
 
 /* Assignee display helpers (multi-select model): an empty assignee list
    means the whole job crew covers the task; names render as one chip each. */
@@ -2522,19 +2536,60 @@ function shiftDateStr(dateStr: string, days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/* Monday (YYYY-MM-DD) of the week containing dateStr. */
+function mondayOf(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00`);
+  const day = d.getDay(); // 0 = Sunday
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+/* The 7 dates (Mon–Sun) of the week starting at weekStart. */
+function weekDatesOf(weekStart: string): string[] {
+  const out: string[] = [];
+  const d = new Date(`${weekStart}T12:00:00`);
+  for (let i = 0; i < 7; i++) {
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+/* Short weekday name in the current UI language (Mon / seg / lun…). */
+function weekdayShort(dateStr: string): string {
+  const lang = getCurrentLang();
+  const locale = lang === "pt" ? "pt-BR" : lang === "es" ? "es" : "en-US";
+  return new Date(`${dateStr}T12:00:00`).toLocaleDateString(locale, { weekday: "short" });
+}
+/* Day-of-month number in the current UI language. */
+function dayNum(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00`);
+  return String(d.getDate());
+}
+
 function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const qc = useQueryClient();
+  // Week-based planning: the strip shows Mon–Sun of `weekStart`; `date` is
+  // the selected day whose plan is shown and edited.
+  const [weekStart, setWeekStart] = useState(mondayOf(todayInput()));
   const [date, setDate] = useState(todayInput());
   const isToday = date === todayInput();
+  const weekDates = weekDatesOf(weekStart);
+  const goToday = () => { setWeekStart(mondayOf(todayInput())); setDate(todayInput()); };
+  const shiftWeek = (weeks: number) => {
+    const next = shiftDateStr(weekStart, weeks * 7);
+    setWeekStart(next);
+    setDate(shiftDateStr(date, weeks * 7));
+  };
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Set<number>>(new Set());
   const [assignCtx, setAssignCtx] = useState<DispatchAssignCtx | null>(null);
   const [crewCtx, setCrewCtx] = useState<DispatchCrewCtx | null>(null);
   const [sheetSearch, setSheetSearch] = useState("");
   const [assignSelection, setAssignSelection] = useState<Set<number>>(new Set());
+  const [assignTeamSelection, setAssignTeamSelection] = useState<Set<number>>(new Set());
   const openAssignSheet = (ctx: DispatchAssignCtx) => {
     setAssignCtx(ctx);
     setAssignSelection(new Set(taskAssigneeIds(ctx.task)));
+    setAssignTeamSelection(new Set(ctx.task.teamIds ?? []));
     setSheetSearch("");
   };
   const [crewSearch, setCrewSearch] = useState("");
@@ -2546,11 +2601,47 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const [cjType, setCjType] = useState("");
   const [cjPhase, setCjPhase] = useState("");
   const [cjMsg, setCjMsg] = useState("");
+  // Teams manager
+  const [showTeams, setShowTeams] = useState(false);
+  const [teamNameInput, setTeamNameInput] = useState("");
+  const [teamMsg, setTeamMsg] = useState("");
+  const [editingTeam, setEditingTeam] = useState<TeamLite | null>(null);
+  const [teamMemberSearch, setTeamMemberSearch] = useState("");
+  const [teamMemberSel, setTeamMemberSel] = useState<Set<number>>(new Set());
+  const [renameInput, setRenameInput] = useState("");
+  const [confirmDeleteTeam, setConfirmDeleteTeam] = useState<number | null>(null);
+  // Job standing teams
+  const [jobTeamsCtx, setJobTeamsCtx] = useState<{ jobId: number; jobName: string; teamIds: number[] } | null>(null);
+  const [jobTeamsSel, setJobTeamsSel] = useState<Set<number>>(new Set());
+  const openJobTeamsSheet = (jobId: number, jobName: string, teamIds: number[]) => {
+    setJobTeamsCtx({ jobId, jobName, teamIds });
+    setJobTeamsSel(new Set(teamIds));
+  };
+  // Day plan editor (per job, per day)
+  const [planCtx, setPlanCtx] = useState<{ jobId: number; jobName: string; projectId: number; projectName: string; jobTeamIds: number[]; tasks: TaskLite[] } | null>(null);
+  const [planTeamSel, setPlanTeamSel] = useState<Set<number>>(new Set());
+  const [planEmpSel, setPlanEmpSel] = useState<Set<number>>(new Set());
+  const [planTask, setPlanTask] = useState("");
+  const [planNotes, setPlanNotes] = useState("");
+  const [planSearch, setPlanSearch] = useState("");
+  const openPlanSheet = (jobId: number, jobName: string, projectId: number, projectName: string, jobTeamIds: number[], tasks: TaskLite[]) => {
+    setPlanCtx({ jobId, jobName, projectId, projectName, jobTeamIds, tasks });
+    setPlanTeamSel(new Set());
+    setPlanEmpSel(new Set());
+    setPlanTask("");
+    setPlanNotes("");
+    setPlanSearch("");
+  };
+  const [confirmClearDay, setConfirmClearDay] = useState(false);
 
-  const dispatchQ = useQuery({ queryKey: ["dispatch", cid, date], queryFn: () => api.getDispatch({ companyId: cid, actorId: session.userId, date }) });
+  const dispatchQ = useQuery({ queryKey: ["dispatch", cid, date, weekStart], queryFn: () => api.getDispatch({ companyId: cid, actorId: session.userId, date, weekStart }) });
   const employeesQ = useQuery({ queryKey: ["employees", cid], queryFn: () => api.listEmployees({ companyId: cid }) });
   const allEmployees = employeesQ.data?.employees ?? [];
   const assignableEmployees = allEmployees.filter((e) => e.status === "ativo" && e.role !== "cliente");
+  const teams: TeamLite[] = (dispatchQ.data?.teams ?? []) as TeamLite[];
+  const days: DistributionDayLite[] = (dispatchQ.data?.days ?? []) as DistributionDayLite[];
+  const dayEntries: DistributionEntryLite[] = days.find((d) => d.date === date)?.entries ?? [];
+  const teamById = new Map(teams.map((t) => [t.id, t]));
   // For the create-job form
   const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }), enabled: showCreateJob });
   const svcTypesQ = useQuery({ queryKey: ["service-types-light", cid], queryFn: () => api.listServiceTypes({ companyId: cid, light: true }), enabled: showCreateJob });
@@ -2575,14 +2666,77 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const invalidateDispatch = () => {
     qc.invalidateQueries({ queryKey: ["dispatch", cid] });
     qc.invalidateQueries({ queryKey: ["my-tasks", cid] });
+    qc.invalidateQueries({ queryKey: ["my-day-plan", cid] });
     qc.invalidateQueries({ queryKey: ["job-tasks", cid] });
     qc.invalidateQueries({ queryKey: ["project-detail", cid] });
   };
 
-  const assignTaskMut = useMutation({
-    mutationFn: (args: { taskId: number; assigneeIds: number[] }) => api.updateTask({ companyId: cid, actorId: session.userId, taskId: args.taskId, assigneeIds: args.assigneeIds }),
-    onSuccess: () => { invalidateDispatch(); setAssignCtx(null); setSheetSearch(""); setSaveMsg(tr("Assignees saved. ✅", "Responsáveis salvos. ✅", "Responsables guardados. ✅")); },
+  /* Save task assignees (individuals) + assigned teams together. */
+  const saveTaskAssignMut = useMutation({
+    mutationFn: async (args: { taskId: number; assigneeIds: number[]; teamIds: number[] }) => {
+      await api.updateTask({ companyId: cid, actorId: session.userId, taskId: args.taskId, assigneeIds: args.assigneeIds });
+      await api.setTaskTeams({ companyId: cid, actorId: session.userId, taskId: args.taskId, teamIds: args.teamIds });
+    },
+    onSuccess: () => { invalidateDispatch(); setAssignCtx(null); setSheetSearch(""); setSaveMsg(tr("Task assignment saved. ✅", "Atribuição da tarefa salva. ✅", "Asignación de la tarea guardada. ✅")); },
     onError: () => setSaveMsg(tr("Could not save this assignment. Try again.", "Não foi possível salvar esta atribuição. Tente novamente.", "No se pudo guardar esta asignación. Inténtalo de nuevo.")),
+  });
+
+  const saveJobTeamsMut = useMutation({
+    mutationFn: (args: { jobId: number; teamIds: number[] }) => api.setJobTeams({ companyId: cid, actorId: session.userId, jobId: args.jobId, teamIds: args.teamIds }),
+    onSuccess: () => { invalidateDispatch(); setJobTeamsCtx(null); setSaveMsg(tr("Job teams saved. ✅", "Times do trabalho salvos. ✅", "Equipos del trabajo guardados. ✅")); },
+    onError: () => setSaveMsg(tr("Could not save the job teams. Try again.", "Não foi possível salvar os times do trabalho. Tente novamente.", "No se pudo guardar los equipos del trabajo. Inténtalo de nuevo.")),
+  });
+
+  /* ---- Teams manager mutations ---- */
+  const createTeamMut = useMutation({
+    mutationFn: (name: string) => api.createTeam({ companyId: cid, actorId: session.userId, name }),
+    onSuccess: () => { invalidateDispatch(); setTeamNameInput(""); setTeamMsg(""); },
+    onError: () => setTeamMsg(tr("Could not create the team.", "Não foi possível criar o time.", "No se pudo crear el equipo.")),
+  });
+  const renameTeamMut = useMutation({
+    mutationFn: (args: { teamId: number; name: string }) => api.renameTeam({ companyId: cid, actorId: session.userId, teamId: args.teamId, name: args.name }),
+    onSuccess: () => { invalidateDispatch(); setRenameInput(""); },
+    onError: () => setTeamMsg(tr("Could not rename the team.", "Não foi possível renomear o time.", "No se pudo cambiar el nombre del equipo.")),
+  });
+  const deleteTeamMut = useMutation({
+    mutationFn: (teamId: number) => api.deleteTeam({ companyId: cid, actorId: session.userId, teamId }),
+    onSuccess: () => { invalidateDispatch(); setConfirmDeleteTeam(null); if (editingTeam) setEditingTeam(null); },
+    onError: () => setTeamMsg(tr("Could not delete the team.", "Não foi possível excluir o time.", "No se pudo eliminar el equipo.")),
+  });
+  const setTeamMembersMut = useMutation({
+    mutationFn: (args: { teamId: number; employeeIds: number[] }) => api.setTeamMembers({ companyId: cid, actorId: session.userId, teamId: args.teamId, employeeIds: args.employeeIds }),
+    onSuccess: () => { invalidateDispatch(); setTeamMsg(tr("Team members saved. ✅", "Membros do time salvos. ✅", "Miembros del equipo guardados. ✅")); },
+    onError: () => setTeamMsg(tr("Could not save the team members.", "Não foi possível salvar os membros do time.", "No se pudo guardar los miembros del equipo.")),
+  });
+
+  /* ---- Day plan mutations ---- */
+  /* Replace the whole day plan for one job: delete existing rows, insert new. */
+  const saveDayPlanMut = useMutation({
+    mutationFn: async (args: { jobId: number; teamIds: number[]; employeeIds: number[]; taskId: number | null; notes: string }) => {
+      const existing = dayEntries.filter((e) => e.jobId === args.jobId);
+      for (const e of existing) {
+        await api.deleteDistributionEntry({ companyId: cid, actorId: session.userId, id: e.id });
+      }
+      const taskId = args.taskId;
+      for (const teamId of args.teamIds) {
+        await api.saveDistributionEntry({ companyId: cid, actorId: session.userId, date, jobId: args.jobId, teamId, taskId, notes: args.notes });
+      }
+      for (const employeeId of args.employeeIds) {
+        await api.saveDistributionEntry({ companyId: cid, actorId: session.userId, date, jobId: args.jobId, employeeId, taskId, notes: args.notes });
+      }
+    },
+    onSuccess: () => { invalidateDispatch(); setPlanCtx(null); setSaveMsg(tr("Day plan saved. ✅", "Plano do dia salvo. ✅", "Plan del día guardado. ✅")); },
+    onError: () => setSaveMsg(tr("Could not save the day plan. Try again.", "Não foi possível salvar o plano do dia. Tente novamente.", "No se pudo guardar el plan del día. Inténtalo de nuevo.")),
+  });
+  const copyDayMut = useMutation({
+    mutationFn: (toDates: string[]) => api.copyDistribution({ companyId: cid, actorId: session.userId, fromDate: date, toDates }),
+    onSuccess: (r) => { invalidateDispatch(); setSaveMsg(tr(`Day plan copied (${r.copied} rows). ✅`, `Plano do dia copiado (${r.copied} linhas). ✅`, `Plan del día copiado (${r.copied} filas). ✅`)); },
+    onError: () => setSaveMsg(tr("Could not copy the day plan.", "Não foi possível copiar o plano do dia.", "No se pudo copiar el plan del día.")),
+  });
+  const clearDayMut = useMutation({
+    mutationFn: () => api.clearDistribution({ companyId: cid, actorId: session.userId, date }),
+    onSuccess: (r) => { invalidateDispatch(); setConfirmClearDay(false); setSaveMsg(tr(`Day plan cleared (${r.deleted} rows).`, `Plano do dia apagado (${r.deleted} linhas).`, `Plan del día borrado (${r.deleted} filas).`)); },
+    onError: () => setSaveMsg(tr("Could not clear the day plan.", "Não foi possível apagar o plano do dia.", "No se pudo borrar el plan del día.")),
   });
 
   const saveCrewMut = useMutation({
@@ -2643,9 +2797,13 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
           <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")}</h2>
           <button type="button" className={btnGhost} onClick={() => window.print()} aria-label={tr("Print or save as PDF", "Imprimir ou salvar como PDF", "Imprimir o guardar como PDF")}>🖨️ {tr("Print / PDF", "Imprimir / PDF", "Imprimir / PDF")}</button>
         </div>
-        <button type="button" className={`${btnPrimary} mt-3 w-full`} onClick={() => { setShowCreateJob((s) => !s); setCjMsg(""); }} aria-expanded={showCreateJob}>{showCreateJob ? tr("Close", "Fechar", "Cerrar") : tr("+ Create job", "+ Criar trabalho", "+ Crear trabajo")}</button>
+        <div className="mt-3 flex gap-2">
+          <button type="button" className={`${btnPrimary} flex-1`} onClick={() => { setShowCreateJob((s) => !s); setCjMsg(""); }} aria-expanded={showCreateJob}>{showCreateJob ? tr("Close", "Fechar", "Cerrar") : tr("+ Create job", "+ Criar trabalho", "+ Crear trabajo")}</button>
+          <button type="button" className={`${btnGhost} shrink-0`} onClick={() => { setShowTeams((s) => !s); setTeamMsg(""); }} aria-expanded={showTeams} aria-label={tr("Manage teams", "Gerenciar times", "Gestionar equipos")}>👥 {tr("Teams", "Times", "Equipos")}</button>
+        </div>
         <p className="mt-2 text-sm text-[var(--dim)]">{tr("Work distribution — who does what, on every project, at a glance.", "Distribuição de trabalhos — quem faz o quê, em cada obra, de relance.", "Distribución de trabajos: quién hace qué, en cada obra, de un vistazo.")}</p>
         <p className="mt-2 rounded-xl bg-[#0f2a44] px-3 py-2 text-sm font-bold text-white">{tr("Jobs have crews. Tasks have assignees.", "Trabalhos têm equipes. Tarefas têm responsáveis.", "Los trabajos tienen equipos. Las tareas tienen responsables.")}</p>
+        <p className="mt-2 rounded-xl bg-[var(--surface2)] px-3 py-2 text-xs text-[var(--dim)]">{tr("The day plan below is operational: it says who goes where each day. Payroll always follows the task's assignees.", "O plano do dia abaixo é operacional: diz quem vai onde a cada dia. A folha sempre segue os responsáveis da tarefa.", "El plan del día es operativo: dice quién va dónde cada día. La nómina siempre sigue a los responsables de la tarea.")}</p>
         {showCreateJob && (
           <form className="mt-3 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e) => { e.preventDefault(); createJobFromPhase.mutate(); }}>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -2672,24 +2830,119 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
             <button className={`${btnNavy} w-full`} disabled={createJobFromPhase.isPending || !cjProject || !cjType || !cjPhase}>{createJobFromPhase.isPending ? tr("Creating…", "Criando…", "Creando…") : tr("Create job", "Criar trabalho", "Crear trabajo")}</button>
           </form>
         )}
+        {showTeams && (
+          <div className="mt-3 space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Teams manager", "Gerenciador de times", "Gestor de equipos")}>
+            <h3 className="font-bold">👥 {tr("Teams", "Times", "Equipos")}</h3>
+            <p className="text-xs text-[var(--dim)]">{tr("Group your crew into teams. Assign a team to a task instead of picking people one by one — and plan the day by team.", "Agrupe sua equipe em times. Atribua um time a uma tarefa em vez de escolher pessoa por pessoa — e planeje o dia por time.", "Agrupa tu cuadrilla en equipos. Asigna un equipo a una tarea en vez de elegir persona por persona, y planifica el día por equipo.")}</p>
+            <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (teamNameInput.trim()) createTeamMut.mutate(teamNameInput.trim()); }}>
+              <input className={inputCls} value={teamNameInput} onChange={(e) => setTeamNameInput(e.target.value)} placeholder={tr("New team name…", "Nome do novo time…", "Nombre del nuevo equipo…")} aria-label={tr("New team name", "Nome do novo time", "Nombre del nuevo equipo")} maxLength={191} />
+              <button type="submit" disabled={createTeamMut.isPending || !teamNameInput.trim()} className={`${btnNavy} shrink-0 disabled:opacity-40`}>{tr("+ Add", "+ Adicionar", "+ Agregar")}</button>
+            </form>
+            {teamMsg && <p className="text-sm font-semibold" role="status">{teamMsg}</p>}
+            {teams.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No teams yet. Create the first one above.", "Nenhum time ainda. Crie o primeiro acima.", "Aún no hay equipos. Crea el primero arriba.")}</p>}
+            {teams.map((t) => {
+              const isEditing = editingTeam?.id === t.id;
+              const memberSearch = teamMemberSearch.trim().toLowerCase();
+              const candidates = assignableEmployees.filter((e) => !memberSearch || e.name.toLowerCase().includes(memberSearch) || e.trade.toLowerCase().includes(memberSearch));
+              return (
+                <div key={t.id} className="rounded-xl bg-[var(--surface2)] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-bold">👥 {t.name} <span className="ml-1 text-xs font-semibold text-[var(--dim)]">{t.memberIds.length} {tr("members", "membros", "miembros")}</span></p>
+                    <div className="flex shrink-0 gap-1">
+                      <button type="button" onClick={() => { setEditingTeam(isEditing ? null : t); setTeamMemberSel(new Set(t.memberIds)); setTeamMemberSearch(""); setRenameInput(t.name); setConfirmDeleteTeam(null); }} className="rounded-lg bg-[var(--surface)] px-2.5 py-1.5 text-xs font-bold ring-1 ring-[var(--border)] active:opacity-70" aria-expanded={isEditing}>{isEditing ? tr("Close", "Fechar", "Cerrar") : tr("Manage", "Gerenciar", "Gestionar")}</button>
+                    </div>
+                  </div>
+                  {t.memberNames.length > 0 && <p className="mt-1 text-xs text-[var(--dim)]">{t.memberNames.join(", ")}</p>}
+                  {isEditing && (
+                    <div className="mt-3 space-y-2 border-t border-[var(--border)] pt-3">
+                      <div className="flex gap-2">
+                        <input className={inputCls} value={renameInput} onChange={(e) => setRenameInput(e.target.value)} aria-label={tr("Team name", "Nome do time", "Nombre del equipo")} maxLength={191} />
+                        <button type="button" disabled={renameTeamMut.isPending || !renameInput.trim() || renameInput.trim() === t.name} onClick={() => renameTeamMut.mutate({ teamId: t.id, name: renameInput.trim() })} className={`${btnGhost} shrink-0 disabled:opacity-40`}>{tr("Rename", "Renomear", "Renombrar")}</button>
+                      </div>
+                      <Field label={tr("Search employees", "Buscar funcionários", "Buscar empleados")}>
+                        <input className={inputCls} value={teamMemberSearch} onChange={(e) => setTeamMemberSearch(e.target.value)} placeholder={tr("Type a name…", "Digite um nome…", "Escribe un nombre…")} />
+                      </Field>
+                      <div className="max-h-48 space-y-1.5 overflow-y-auto">
+                        {candidates.map((e) => {
+                          const checked = teamMemberSel.has(e.id);
+                          return (
+                            <button key={e.id} type="button" role="checkbox" aria-checked={checked} onClick={() => setTeamMemberSel((prev) => { const next = new Set(prev); if (next.has(e.id)) next.delete(e.id); else next.add(e.id); return next; })} className={`flex w-full items-center justify-between gap-2 rounded-xl border p-2.5 text-left active:opacity-70 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)]"}`}>
+                              <span><span className="block text-sm font-bold">👤 {e.name}</span>{e.trade ? <span className="block text-xs text-[var(--dim)]">{e.trade}</span> : null}</span>
+                              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-sm font-black ${checked ? "border-[#f97316] bg-[#f97316] text-white" : "border-[var(--border)] text-transparent"}`} aria-hidden="true">✓</span>
+                            </button>
+                          );
+                        })}
+                        {candidates.length === 0 && <p className="py-2 text-center text-sm text-[var(--dim)]">{tr("No employee matches that search.", "Nenhum funcionário corresponde a essa busca.", "Ningún empleado coincide con esa búsqueda.")}</p>}
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="button" disabled={setTeamMembersMut.isPending} onClick={() => setTeamMembersMut.mutate({ teamId: t.id, employeeIds: [...teamMemberSel] })} className={`${btnNavy} flex-1 disabled:opacity-40`}>{setTeamMembersMut.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr(`Save members (${teamMemberSel.size})`, `Salvar membros (${teamMemberSel.size})`, `Guardar miembros (${teamMemberSel.size})`)}</button>
+                        {confirmDeleteTeam === t.id ? (
+                          <>
+                            <button type="button" disabled={deleteTeamMut.isPending} onClick={() => deleteTeamMut.mutate(t.id)} className="rounded-xl bg-red-600 px-3 py-2 text-sm font-black text-white disabled:opacity-40">{tr("Confirm delete", "Confirmar exclusão", "Confirmar eliminación")}</button>
+                            <button type="button" onClick={() => setConfirmDeleteTeam(null)} className={btnGhost}>{tr("Keep", "Manter", "Mantener")}</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => setConfirmDeleteTeam(t.id)} className="rounded-xl px-3 py-2 text-sm font-bold text-red-600 ring-1 ring-red-300 active:opacity-70" aria-label={tr(`Delete team ${t.name}`, `Excluir o time ${t.name}`, `Eliminar el equipo ${t.name}`)}>🗑️</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
       <div className="hidden print:block">
         <h2 className="text-xl font-bold">{tr("Dispatch", "Distribuição", "Distribución")} — {date}</h2>
         <p className="text-sm text-gray-600">{session.companyName}</p>
       </div>
 
-      {/* Day selector + Unassigned filter */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1" role="group" aria-label={tr("Day selector", "Seletor de dia", "Selector de día")}>
-          <button type="button" aria-label={tr("Previous day", "Dia anterior", "Día anterior")} onClick={() => setDate((d) => shiftDateStr(d, -1))} className="rounded-lg px-3 py-2 text-base font-black active:opacity-70">‹</button>
-          <button type="button" aria-label={tr("Go to today", "Ir para hoje", "Ir a hoy")} aria-pressed={isToday} onClick={() => setDate(todayInput())} className={`rounded-lg px-3 py-2 text-sm font-bold ${isToday ? "bg-[#f97316] text-white" : "active:opacity-70"}`}>{tr("Today", "Hoje", "Hoy")}</button>
-          <button type="button" aria-label={tr("Next day", "Próximo dia", "Día siguiente")} onClick={() => setDate((d) => shiftDateStr(d, 1))} className="rounded-lg px-3 py-2 text-base font-black active:opacity-70">›</button>
+      {/* Week strip + day actions */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1" role="group" aria-label={tr("Week selector", "Seletor de semana", "Selector de semana")}>
+          <button type="button" aria-label={tr("Previous week", "Semana anterior", "Semana anterior")} onClick={() => shiftWeek(-1)} className="shrink-0 rounded-lg px-2.5 py-2 text-base font-black active:opacity-70">‹</button>
+          <div className="grid flex-1 grid-cols-7 gap-0.5" role="group" aria-label={tr("Days of the week", "Dias da semana", "Días de la semana")}>
+            {weekDates.map((d) => {
+              const selected = d === date;
+              const today = d === todayInput();
+              const count = (days.find((x) => x.date === d)?.entries ?? []).length;
+              return (
+                <button key={d} type="button" onClick={() => setDate(d)} aria-pressed={selected}
+                  aria-label={tr(`Plan for ${fmtDate(d)}${today ? ", today" : ""}, ${count} rows`, `Plano de ${fmtDate(d)}${today ? ", hoje" : ""}, ${count} linhas`, `Plan del ${fmtDate(d)}${today ? ", hoy" : ""}, ${count} filas`)}
+                  className={`flex flex-col items-center rounded-lg px-1 py-1.5 active:opacity-70 ${selected ? "bg-[#f97316] text-white" : today ? "ring-2 ring-[#f97316]" : ""}`}>
+                  <span className="text-[10px] font-black uppercase leading-none">{weekdayShort(d)}</span>
+                  <span className={`mt-0.5 text-sm font-black leading-none ${selected ? "" : "text-[var(--dim)]"}`}>{dayNum(d)}</span>
+                  {count > 0 && <span className={`mt-0.5 h-1.5 w-1.5 rounded-full ${selected ? "bg-white" : "bg-[#f97316]"}`} aria-hidden="true" />}
+                </button>
+              );
+            })}
+          </div>
+          <button type="button" aria-label={tr("Next week", "Próxima semana", "Próxima semana")} onClick={() => shiftWeek(1)} className="shrink-0 rounded-lg px-2.5 py-2 text-base font-black active:opacity-70">›</button>
         </div>
-        <p className="text-sm font-semibold" aria-label={tr(`Selected day ${fmtDate(date)}`, `Dia selecionado ${fmtDate(date)}`, `Día seleccionado ${fmtDate(date)}`)}>{fmtDate(date)}{isToday ? ` • ${tr("Today", "Hoje", "Hoy")}` : ""}</p>
-        <button type="button" aria-label={tr(`Show unassigned tasks only, ${unassignedCount} unassigned`, `Mostrar só tarefas sem responsável, ${unassignedCount} sem responsável`, `Mostrar solo tareas sin responsable, ${unassignedCount} sin responsable`)} aria-pressed={unassignedOnly} onClick={() => setUnassignedOnly((v) => !v)} className={`ml-auto inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-bold ${unassignedOnly ? "border-orange-500 bg-orange-500 text-white" : "border-orange-300 bg-orange-50 text-orange-800 dark:bg-orange-950/40 dark:text-orange-200"}`}>
-          {tr("Unassigned only", "Só sem responsável", "Solo sin responsable")}
-          <span className={`rounded-full px-2 py-0.5 text-xs font-black ${unassignedOnly ? "bg-white text-orange-600" : "bg-orange-500 text-white"}`} aria-hidden="true">{unassignedCount} {tr("unassigned", "sem responsável", "sin responsable")}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={goToday} aria-pressed={isToday} className={`rounded-lg px-3 py-2 text-sm font-bold ring-1 ring-[var(--border)] active:opacity-70 ${isToday ? "bg-[#0f2a44] text-white" : "bg-[var(--surface)]"}`}>{tr("Today", "Hoje", "Hoy")}</button>
+          <p className="text-sm font-semibold">{fmtDate(date)}{isToday ? ` • ${tr("Today", "Hoje", "Hoy")}` : ""}</p>
+          <button type="button" aria-pressed={unassignedOnly} onClick={() => setUnassignedOnly((v) => !v)} className={`ml-auto inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-bold ${unassignedOnly ? "border-orange-500 bg-orange-500 text-white" : "border-orange-300 bg-orange-50 text-orange-800 dark:bg-orange-950/40 dark:text-orange-200"}`}>
+            {tr("Unassigned only", "Só sem responsável", "Solo sin responsable")}
+            <span className={`rounded-full px-2 py-0.5 text-xs font-black ${unassignedOnly ? "bg-white text-orange-600" : "bg-orange-500 text-white"}`} aria-hidden="true">{unassignedCount} {tr("unassigned", "sem responsável", "sin responsable")}</span>
+          </button>
+        </div>
+        {/* Day-plan actions for the selected day */}
+        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-[var(--surface2)] p-2">
+          <span className="px-1 text-[11px] font-black uppercase tracking-wide text-[var(--dim)]">{tr("Day plan:", "Plano do dia:", "Plan del día:")}</span>
+          <button type="button" disabled={copyDayMut.isPending || dayEntries.length === 0} onClick={() => copyDayMut.mutate([shiftDateStr(date, 1)])} className="rounded-lg bg-[var(--surface)] px-3 py-1.5 text-xs font-bold ring-1 ring-[var(--border)] active:opacity-70 disabled:opacity-40">📋→ {tr("Copy to tomorrow", "Copiar para amanhã", "Copiar a mañana")}</button>
+          <button type="button" disabled={copyDayMut.isPending || dayEntries.length === 0} onClick={() => copyDayMut.mutate(weekDates.filter((d) => d !== date))} className="rounded-lg bg-[var(--surface)] px-3 py-1.5 text-xs font-bold ring-1 ring-[var(--border)] active:opacity-70 disabled:opacity-40">📋→ {tr("Copy to whole week", "Copiar p/ a semana", "Copiar a la semana")}</button>
+          {confirmClearDay ? (
+            <>
+              <button type="button" disabled={clearDayMut.isPending} onClick={() => clearDayMut.mutate()} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40">{tr("Confirm clear", "Confirmar limpeza", "Confirmar borrado")}</button>
+              <button type="button" onClick={() => setConfirmClearDay(false)} className="rounded-lg px-3 py-1.5 text-xs font-bold ring-1 ring-[var(--border)] active:opacity-70">{tr("Keep", "Manter", "Mantener")}</button>
+            </>
+          ) : (
+            <button type="button" disabled={dayEntries.length === 0} onClick={() => setConfirmClearDay(true)} className="rounded-lg px-3 py-1.5 text-xs font-bold text-red-600 ring-1 ring-red-300 active:opacity-70 disabled:opacity-40">🗑️ {tr("Clear day", "Limpar dia", "Borrar día")}</button>
+          )}
+          <span className="ml-auto text-[11px] text-[var(--dim)]">{dayEntries.length} {tr("rows", "linhas", "filas")}</span>
+        </div>
       </div>
 
       {saveMsg && <p className="rounded-xl bg-[var(--surface)] px-3 py-2 text-sm font-semibold ring-1 ring-[var(--border)]" role="status">{saveMsg}</p>}
@@ -2747,6 +3000,40 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
                     <button type="button" onClick={() => openCrewSheet({ jobId: j.jobId, jobName: j.jobName, projectId: p.projectId, crewIds: j.crew.map((c) => c.id) })} aria-label={tr(`Assign crew for ${j.jobName}`, `Atribuir equipe para ${j.jobName}`, `Asignar equipo para ${j.jobName}`)} className="ml-auto rounded-lg bg-[#f97316] px-3 py-1.5 text-xs font-black text-white active:opacity-80">{tr("Assign crew", "Atribuir equipe", "Asignar equipo")}</button>
                   </div>
 
+                  {/* Standing teams for this job + today's day-plan rows */}
+                  {(() => {
+                    const jobEntries = dayEntries.filter((e) => e.jobId === j.jobId);
+                    return (
+                      <div className="mt-2 rounded-xl bg-[var(--surface)] p-2.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-black uppercase tracking-wide text-[var(--dim)]">👥 {tr("Teams:", "Times:", "Equipos:")}</span>
+                          {(j.teamIds ?? []).map((tid) => {
+                            const t = teamById.get(tid);
+                            return t ? <span key={tid} className="inline-flex items-center gap-1 rounded-full bg-[#0f2a44] px-2.5 py-1 text-xs font-bold text-white">👥 {t.name}</span> : null;
+                          })}
+                          {(j.teamIds ?? []).length === 0 && <span className="text-xs text-[var(--dim)]">{tr("No teams linked", "Nenhum time vinculado", "Ningún equipo vinculado")}</span>}
+                          <button type="button" onClick={() => openJobTeamsSheet(j.jobId, j.jobName, j.teamIds ?? [])} className="ml-auto rounded-lg px-2.5 py-1.5 text-xs font-bold ring-1 ring-[var(--border)] active:opacity-70" aria-label={tr(`Choose teams for ${j.jobName}`, `Escolher times de ${j.jobName}`, `Elegir equipos de ${j.jobName}`)}>{tr("Choose teams", "Escolher times", "Elegir equipos")}</button>
+                        </div>
+                        <div className="mt-2 border-t border-[var(--border)] pt-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-black uppercase tracking-wide text-[var(--dim)]">📋 {tr("Plan", "Plano", "Plan")} {fmtDate(date)}:</span>
+                            {jobEntries.length === 0 && <span className="text-xs text-[var(--dim)]">{tr("Nothing planned", "Nada planejado", "Nada planeado")}</span>}
+                            <button type="button" onClick={() => openPlanSheet(j.jobId, j.jobName, p.projectId, p.projectName, j.teamIds ?? [], j.tasks)} className="ml-auto rounded-lg bg-[#0f2a44] px-2.5 py-1.5 text-xs font-black text-white active:opacity-80">{tr("Plan day", "Planejar dia", "Planear día")}</button>
+                          </div>
+                          {jobEntries.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {jobEntries.map((e) => (
+                                <span key={e.id} className="inline-flex max-w-full items-center gap-1 rounded-full bg-green-100 px-2.5 py-1 text-xs font-bold text-green-900 dark:bg-green-950/50 dark:text-green-200">
+                                  {e.teamId !== null ? `👥 ${e.teamName}` : `👤 ${e.employeeName}`}{e.taskTitle ? ` • ${e.taskTitle}` : ""}{e.notes ? ` 📝` : ""}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {expanded && (
                     <div className="mt-3 space-y-2 border-t border-[var(--border)] pt-3">
                       {j.tasks.length === 0 && <p className="text-sm text-[var(--dim)]">{tr("No tasks on this job yet. Add tasks from the project’s job page — then assign each one here.", "Nenhuma tarefa neste trabalho ainda. Adicione tarefas na página do trabalho dentro da obra — depois atribua cada uma aqui.", "Todavía no hay tareas en este trabajo. Agrega tareas desde la página del trabajo dentro de la obra, y luego asigna cada una aquí.")}</p>}
@@ -2763,9 +3050,15 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
                             {unassigned ? (
                               <span className="shrink-0 rounded-full bg-orange-500 px-2.5 py-1 text-xs font-black text-white">{tr("Unassigned", "Sem responsável", "Sin responsable")}</span>
                             ) : taskAssigneeNames(t).length > 0 ? (
-                              <span className="flex max-w-[55%] shrink-0 flex-wrap justify-end gap-1">{taskAssigneeNames(t).map((n) => <span key={n} className="rounded-full bg-[#0f2a44] px-2 py-0.5 text-[11px] font-bold text-white">👤 {n}</span>)}</span>
+                              <span className="flex max-w-[55%] shrink-0 flex-wrap justify-end gap-1">
+                                {(t.teamIds ?? []).map((tid) => { const tm = teamById.get(tid); return tm ? <span key={`tm-${tid}`} className="rounded-full bg-[#0f2a44] px-2 py-0.5 text-[11px] font-bold text-white">👥 {tm.name}</span> : null; })}
+                                {taskAssigneeNames(t).map((n) => <span key={n} className="rounded-full bg-[#0f2a44] px-2 py-0.5 text-[11px] font-bold text-white">👤 {n}</span>)}
+                              </span>
                             ) : (
-                              <span className="shrink-0 rounded-full bg-gray-200 px-2.5 py-1 text-xs font-bold text-gray-700 dark:bg-white/15 dark:text-white">👥 {tr("Whole crew", "Equipe toda", "Todo el equipo")}</span>
+                              <span className="flex max-w-[55%] shrink-0 flex-wrap justify-end gap-1">
+                                {(t.teamIds ?? []).map((tid) => { const tm = teamById.get(tid); return tm ? <span key={`tm-${tid}`} className="rounded-full bg-[#0f2a44] px-2 py-0.5 text-[11px] font-bold text-white">👥 {tm.name}</span> : null; })}
+                                <span className="shrink-0 rounded-full bg-gray-200 px-2.5 py-1 text-xs font-bold text-gray-700 dark:bg-white/15 dark:text-white">👥 {tr("Whole crew", "Equipe toda", "Todo el equipo")}</span>
+                              </span>
                             )}
                           </button>
                         );
@@ -2799,7 +3092,28 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
               </Field>
             </div>
             <div className="mt-3 space-y-2">
-              <button type="button" disabled={assignTaskMut.isPending} onClick={() => setAssignSelection(new Set())} aria-label={tr(`Assign the task ${assignCtx.task.title} to the whole crew`, `Atribuir a tarefa ${assignCtx.task.title} à equipe toda`, `Asignar la tarea ${assignCtx.task.title} a todo el equipo`)} aria-pressed={assignSelection.size === 0} className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${assignSelection.size === 0 && assignCtx.crew.length > 0 ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+              {/* Teams first: assign a whole team instead of picking people one by one */}
+              {teams.length > 0 && (
+                <>
+                  <p className="px-0.5 text-[11px] font-bold text-[var(--dim)]">👥 {tr("Or assign a team — everyone in the team is covered:", "Ou atribua um time — todos do time ficam cobertos:", "O asigna un equipo: todos sus miembros quedan cubiertos:")}</p>
+                  {teams.map((t) => {
+                    const checked = assignTeamSelection.has(t.id);
+                    return (
+                      <button key={t.id} type="button" role="checkbox" aria-checked={checked} disabled={saveTaskAssignMut.isPending}
+                        onClick={() => setAssignTeamSelection((prev) => { const next = new Set(prev); if (next.has(t.id)) next.delete(t.id); else next.add(t.id); return next; })}
+                        aria-label={checked ? tr(`Remove team ${t.name} from the task ${assignCtx.task.title}`, `Remover o time ${t.name} da tarefa ${assignCtx.task.title}`, `Quitar el equipo ${t.name} de la tarea ${assignCtx.task.title}`) : tr(`Assign team ${t.name} to the task ${assignCtx.task.title}`, `Atribuir o time ${t.name} à tarefa ${assignCtx.task.title}`, `Asignar el equipo ${t.name} a la tarea ${assignCtx.task.title}`)}
+                        className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+                        <span>
+                          <span className="block font-bold">👥 {t.name} <span className="ml-1 text-xs font-semibold text-[var(--dim)]">{t.memberIds.length} {tr("members", "membros", "miembros")}</span></span>
+                          {t.memberNames.length > 0 && <span className="block text-xs text-[var(--dim)]">{t.memberNames.join(", ")}</span>}
+                        </span>
+                        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-sm font-black ${checked ? "border-[#f97316] bg-[#f97316] text-white" : "border-[var(--border)] text-transparent"}`} aria-hidden="true">✓</span>
+                      </button>
+                    );
+                  })}
+                </>
+              )}
+              <button type="button" disabled={saveTaskAssignMut.isPending} onClick={() => setAssignSelection(new Set())} aria-label={tr(`Assign the task ${assignCtx.task.title} to the whole crew`, `Atribuir a tarefa ${assignCtx.task.title} à equipe toda`, `Asignar la tarea ${assignCtx.task.title} a todo el equipo`)} aria-pressed={assignSelection.size === 0} className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${assignSelection.size === 0 && assignCtx.crew.length > 0 ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
                 <span>
                   <span className="block font-bold">👥 {tr("Whole crew", "Equipe toda", "Todo el equipo")}</span>
                   <span className="block text-xs text-[var(--dim)]">{assignCtx.crew.length > 0 ? tr(`Everyone on this job (${assignCtx.crew.map((c) => c.name).join(", ")}) can see and work it. Follows the crew if people change.`, `Todos neste trabalho (${assignCtx.crew.map((c) => c.name).join(", ")}) podem vê-la e executá-la. Segue a equipe se as pessoas mudarem.`, `Todos en este trabajo (${assignCtx.crew.map((c) => c.name).join(", ")}) pueden verla y hacerla. Sigue al equipo si las personas cambian.`) : tr("No crew on this job yet — assign a crew below and this task is covered automatically.", "Ainda não há equipe neste trabalho — atribua uma equipe abaixo e esta tarefa fica coberta automaticamente.", "Todavía no hay equipo en este trabajo: asigna un equipo abajo y esta tarea queda cubierta automáticamente.")}</span>
@@ -2821,7 +3135,7 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
               {sheetCrew.map((c) => {
                 const checked = assignSelection.has(c.id);
                 return (
-                <button key={c.id} type="button" role="checkbox" aria-checked={checked} disabled={assignTaskMut.isPending} onClick={() => setAssignSelection((prev) => { const next = new Set(prev); if (next.has(c.id)) next.delete(c.id); else next.add(c.id); return next; })} aria-label={checked ? tr(`Remove ${c.name} from the task ${assignCtx.task.title}`, `Remover ${c.name} da tarefa ${assignCtx.task.title}`, `Quitar a ${c.name} de la tarea ${assignCtx.task.title}`) : tr(`Add ${c.name} to the task ${assignCtx.task.title}`, `Adicionar ${c.name} à tarefa ${assignCtx.task.title}`, `Agregar a ${c.name} a la tarea ${assignCtx.task.title}`)} className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+                <button key={c.id} type="button" role="checkbox" aria-checked={checked} disabled={saveTaskAssignMut.isPending} onClick={() => setAssignSelection((prev) => { const next = new Set(prev); if (next.has(c.id)) next.delete(c.id); else next.add(c.id); return next; })} aria-label={checked ? tr(`Remove ${c.name} from the task ${assignCtx.task.title}`, `Remover ${c.name} da tarefa ${assignCtx.task.title}`, `Quitar a ${c.name} de la tarea ${assignCtx.task.title}`) : tr(`Add ${c.name} to the task ${assignCtx.task.title}`, `Adicionar ${c.name} à tarefa ${assignCtx.task.title}`, `Agregar a ${c.name} a la tarea ${assignCtx.task.title}`)} className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
                   <span><span className="block font-bold">👤 {c.name}</span>{c.trade ? <span className="block text-xs text-[var(--dim)]">{c.trade}</span> : null}</span>
                   <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-sm font-black ${checked ? "border-[#f97316] bg-[#f97316] text-white" : "border-[var(--border)] text-transparent"}`} aria-hidden="true">✓</span>
                 </button>
@@ -2831,7 +3145,7 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
               <p className="text-[11px] font-semibold text-[var(--dim)]" role="status">{assignSelection.size === 0 ? (assignCtx.crew.length > 0 ? tr("Whole crew selected — everyone on this job sees this task.", "Equipe toda selecionada — todos neste trabalho veem esta tarefa.", "Todo el equipo seleccionado: todos en este trabajo ven esta tarea.") : tr("Nobody picked yet — this task is Unassigned until a crew is assigned.", "Ninguém escolhido ainda — esta tarefa fica Sem responsável até uma equipe ser atribuída.", "Nadie elegido aún: esta tarea queda Sin responsable hasta que se asigne un equipo.")) : tr(`${assignSelection.size} selected: ${assignCtx.crew.filter((c) => assignSelection.has(c.id)).map((c) => c.name).join(", ")}`, `${assignSelection.size} selecionado(s): ${assignCtx.crew.filter((c) => assignSelection.has(c.id)).map((c) => c.name).join(", ")}`, `${assignSelection.size} seleccionado(s): ${assignCtx.crew.filter((c) => assignSelection.has(c.id)).map((c) => c.name).join(", ")}`)}</p>
               <div className="flex gap-2 pt-1">
                 <button type="button" className={btnGhost} onClick={() => setAssignCtx(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
-                <button type="button" disabled={assignTaskMut.isPending} onClick={() => assignTaskMut.mutate({ taskId: assignCtx.task.id, assigneeIds: [...assignSelection] })} aria-label={tr(`Save assignees for the task ${assignCtx.task.title}, ${assignSelection.size} selected`, `Salvar responsáveis da tarefa ${assignCtx.task.title}, ${assignSelection.size} selecionado(s)`, `Guardar responsables de la tarea ${assignCtx.task.title}, ${assignSelection.size} seleccionado(s)`)} className={`${btnNavy} flex-1 disabled:opacity-40`}>{assignTaskMut.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr(`Save assignees (${assignSelection.size})`, `Salvar responsáveis (${assignSelection.size})`, `Guardar responsables (${assignSelection.size})`)}</button>
+                <button type="button" disabled={saveTaskAssignMut.isPending} onClick={() => saveTaskAssignMut.mutate({ taskId: assignCtx.task.id, assigneeIds: [...assignSelection], teamIds: [...assignTeamSelection] })} aria-label={tr(`Save assignment for the task ${assignCtx.task.title}: ${assignSelection.size} people, ${assignTeamSelection.size} teams`, `Salvar atribuição da tarefa ${assignCtx.task.title}: ${assignSelection.size} pessoa(s), ${assignTeamSelection.size} time(s)`, `Guardar asignación de la tarea ${assignCtx.task.title}: ${assignSelection.size} persona(s), ${assignTeamSelection.size} equipo(s)`)} className={`${btnNavy} flex-1 disabled:opacity-40`}>{saveTaskAssignMut.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr(`Save (${assignSelection.size} 👤 + ${assignTeamSelection.size} 👥)`, `Salvar (${assignSelection.size} 👤 + ${assignTeamSelection.size} 👥)`, `Guardar (${assignSelection.size} 👤 + ${assignTeamSelection.size} 👥)`)}</button>
               </div>
             </div>
           </div>
@@ -2870,6 +3184,121 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
             <div className="mt-4 flex gap-2">
               <button type="button" className={btnGhost} onClick={() => setCrewCtx(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
               <button type="button" disabled={saveCrewMut.isPending} onClick={() => saveCrewMut.mutate({ ctx: crewCtx, next: new Set(crewSelection) })} aria-label={tr(`Save crew for ${crewCtx.jobName}, ${crewSelection.size} selected`, `Salvar equipe de ${crewCtx.jobName}, ${crewSelection.size} selecionado(s)`, `Guardar equipo de ${crewCtx.jobName}, ${crewSelection.size} seleccionado(s)`)} className={`${btnNavy} flex-1 disabled:opacity-40`}>{saveCrewMut.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr(`Save crew (${crewSelection.size})`, `Salvar equipe (${crewSelection.size})`, `Guardar equipo (${crewSelection.size})`)}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- Bottom sheet: Job teams (standing association) ---- */}
+      {jobTeamsCtx && (
+        <div className="fixed inset-0 z-50 flex items-end bg-black/50" role="dialog" aria-modal="true" aria-label={tr(`Teams for ${jobTeamsCtx.jobName}`, `Times de ${jobTeamsCtx.jobName}`, `Equipos de ${jobTeamsCtx.jobName}`)}>
+          <div className="max-h-[85vh] w-full overflow-y-auto rounded-t-3xl bg-[var(--surface)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="font-bold">👥 {tr("Teams for this job", "Times deste trabalho", "Equipos de este trabajo")}</h3>
+                <p className="mt-0.5 truncate text-sm font-semibold">{jobTeamsCtx.jobName}</p>
+                <p className="text-xs text-[var(--dim)]">{tr("Standing association: these teams usually work this job. The day plan only offers these teams.", "Associação fixa: estes times costumam trabalhar neste trabalho. O plano do dia só oferece estes times.", "Asociación fija: estos equipos suelen trabajar en este trabajo. El plan del día solo ofrece estos equipos.")}</p>
+              </div>
+              <button type="button" aria-label={tr("Close", "Fechar", "Cerrar")} onClick={() => setJobTeamsCtx(null)} className="shrink-0 rounded-lg bg-[var(--surface2)] px-3 py-1.5 text-sm font-bold active:opacity-70">{tr("✕ Close", "✕ Fechar", "✕ Cerrar")}</button>
+            </div>
+            {teams.length === 0 && <p className="mt-3 text-sm text-[var(--dim)]">{tr("No teams yet — create them with the Teams button above.", "Nenhum time ainda — crie com o botão Times acima.", "Aún no hay equipos: créalos con el botón Equipos de arriba.")}</p>}
+            <div className="mt-3 space-y-2">
+              {teams.map((t) => {
+                const checked = jobTeamsSel.has(t.id);
+                return (
+                  <button key={t.id} type="button" role="checkbox" aria-checked={checked} disabled={saveJobTeamsMut.isPending}
+                    onClick={() => setJobTeamsSel((prev) => { const next = new Set(prev); if (next.has(t.id)) next.delete(t.id); else next.add(t.id); return next; })}
+                    className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+                    <span>
+                      <span className="block font-bold">👥 {t.name} <span className="ml-1 text-xs font-semibold text-[var(--dim)]">{t.memberIds.length} {tr("members", "membros", "miembros")}</span></span>
+                      {t.memberNames.length > 0 && <span className="block text-xs text-[var(--dim)]">{t.memberNames.join(", ")}</span>}
+                    </span>
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-sm font-black ${checked ? "border-[#f97316] bg-[#f97316] text-white" : "border-[var(--border)] text-transparent"}`} aria-hidden="true">✓</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button type="button" className={btnGhost} onClick={() => setJobTeamsCtx(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
+              <button type="button" disabled={saveJobTeamsMut.isPending} onClick={() => saveJobTeamsMut.mutate({ jobId: jobTeamsCtx.jobId, teamIds: [...jobTeamsSel] })} className={`${btnNavy} flex-1 disabled:opacity-40`}>{saveJobTeamsMut.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr(`Save teams (${jobTeamsSel.size})`, `Salvar times (${jobTeamsSel.size})`, `Guardar equipos (${jobTeamsSel.size})`)}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- Bottom sheet: Plan the day for one job ---- */}
+      {planCtx && (
+        <div className="fixed inset-0 z-50 flex items-end bg-black/50" role="dialog" aria-modal="true" aria-label={tr(`Plan ${fmtDate(date)} for ${planCtx.jobName}`, `Planejar ${fmtDate(date)} para ${planCtx.jobName}`, `Planear el ${fmtDate(date)} para ${planCtx.jobName}`)}>
+          <div className="max-h-[85vh] w-full overflow-y-auto rounded-t-3xl bg-[var(--surface)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="font-bold">📋 {tr("Plan the day", "Planejar o dia", "Planear el día")} — {fmtDate(date)}</h3>
+                <p className="mt-0.5 truncate text-sm font-semibold">🔧 {planCtx.jobName}</p>
+                <p className="text-xs text-[var(--dim)]">{planCtx.projectName}</p>
+              </div>
+              <button type="button" aria-label={tr("Close", "Fechar", "Cerrar")} onClick={() => setPlanCtx(null)} className="shrink-0 rounded-lg bg-[var(--surface2)] px-3 py-1.5 text-sm font-bold active:opacity-70">{tr("✕ Close", "✕ Fechar", "✕ Cerrar")}</button>
+            </div>
+            <p className="mt-2 text-xs text-[var(--dim)]">{tr("Who works this job on this day? Pick teams, people, or both. Saving replaces this job's plan for the day.", "Quem trabalha neste trabalho neste dia? Escolha times, pessoas ou ambos. Salvar substitui o plano deste trabalho no dia.", "¿Quién trabaja en este trabajo este día? Elige equipos, personas o ambos. Guardar reemplaza el plan de este trabajo para el día.")}</p>
+
+            {/* Teams — limited to the job's associated teams */}
+            <p className="mt-3 px-0.5 text-[11px] font-bold text-[var(--dim)]">👥 {tr("TEAMS (linked to this job)", "TIMES (vinculados a este trabalho)", "EQUIPOS (vinculados a este trabajo)")}</p>
+            {planCtx.jobTeamIds.length === 0 && <p className="mt-1 text-xs text-[var(--dim)]">{tr("No teams linked to this job yet — link them with “Choose teams” on the job card.", "Nenhum time vinculado a este trabalho ainda — vincule com “Escolher times” no cartão do trabalho.", "Aún no hay equipos vinculados a este trabajo: vincúlalos con “Elegir equipos” en la tarjeta del trabajo.")}</p>}
+            <div className="mt-1.5 space-y-2">
+              {planCtx.jobTeamIds.map((tid) => {
+                const t = teamById.get(tid);
+                if (!t) return null;
+                const checked = planTeamSel.has(t.id);
+                return (
+                  <button key={t.id} type="button" role="checkbox" aria-checked={checked} disabled={saveDayPlanMut.isPending}
+                    onClick={() => setPlanTeamSel((prev) => { const next = new Set(prev); if (next.has(t.id)) next.delete(t.id); else next.add(t.id); return next; })}
+                    className={`flex w-full items-center justify-between gap-2 rounded-xl border p-3 text-left active:opacity-70 disabled:opacity-40 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+                    <span>
+                      <span className="block font-bold">👥 {t.name} <span className="ml-1 text-xs font-semibold text-[var(--dim)]">{t.memberIds.length} {tr("members", "membros", "miembros")}</span></span>
+                      {t.memberNames.length > 0 && <span className="block text-xs text-[var(--dim)]">{t.memberNames.join(", ")}</span>}
+                    </span>
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-sm font-black ${checked ? "border-[#f97316] bg-[#f97316] text-white" : "border-[var(--border)] text-transparent"}`} aria-hidden="true">✓</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Individuals */}
+            <p className="mt-3 px-0.5 text-[11px] font-bold text-[var(--dim)]">👤 {tr("PEOPLE (individuals)", "PESSOAS (individuais)", "PERSONAS (individuales)")}</p>
+            <div className="mt-1.5">
+              <input className={inputCls} value={planSearch} onChange={(e) => setPlanSearch(e.target.value)} placeholder={tr("Search people…", "Buscar pessoas…", "Buscar personas…")} aria-label={tr("Search people", "Buscar pessoas", "Buscar personas")} />
+            </div>
+            <div className="mt-1.5 max-h-44 space-y-1.5 overflow-y-auto">
+              {assignableEmployees.filter((e) => { const q = planSearch.trim().toLowerCase(); return !q || e.name.toLowerCase().includes(q) || e.trade.toLowerCase().includes(q); }).map((e) => {
+                const checked = planEmpSel.has(e.id);
+                return (
+                  <button key={e.id} type="button" role="checkbox" aria-checked={checked} disabled={saveDayPlanMut.isPending}
+                    onClick={() => setPlanEmpSel((prev) => { const next = new Set(prev); if (next.has(e.id)) next.delete(e.id); else next.add(e.id); return next; })}
+                    className={`flex w-full items-center justify-between gap-2 rounded-xl border p-2.5 text-left active:opacity-70 disabled:opacity-40 ${checked ? "border-[#f97316] bg-orange-50 dark:bg-orange-950/30" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+                    <span><span className="block text-sm font-bold">👤 {e.name}</span>{e.trade ? <span className="block text-xs text-[var(--dim)]">{e.trade}</span> : null}</span>
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-sm font-black ${checked ? "border-[#f97316] bg-[#f97316] text-white" : "border-[var(--border)] text-transparent"}`} aria-hidden="true">✓</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Optional task + notes */}
+            <div className="mt-3 grid grid-cols-1 gap-2">
+              <Field label={tr("Task (optional — whole job if empty)", "Tarefa (opcional — o trabalho todo se vazio)", "Tarea (opcional: todo el trabajo si está vacía)")}>
+                <select className={inputCls} value={planTask} onChange={(e) => setPlanTask(e.target.value)}>
+                  <option value="">{tr("Whole job", "O trabalho todo", "Todo el trabajo")}</option>
+                  {planCtx.tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+                </select>
+              </Field>
+              <Field label={tr("Notes (optional)", "Observações (opcional)", "Notas (opcional)")}>
+                <input className={inputCls} value={planNotes} onChange={(e) => setPlanNotes(e.target.value)} placeholder={tr("E.g. bring the tile saw", "Ex.: trazer a serra de cerâmica", "Ej.: traer la cortadora")} maxLength={500} />
+              </Field>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button type="button" className={btnGhost} onClick={() => setPlanCtx(null)}>{tr("Cancel", "Cancelar", "Cancelar")}</button>
+              <button type="button" disabled={saveDayPlanMut.isPending || (planTeamSel.size === 0 && planEmpSel.size === 0)} onClick={() => saveDayPlanMut.mutate({ jobId: planCtx.jobId, teamIds: [...planTeamSel], employeeIds: [...planEmpSel], taskId: planTask ? Number(planTask) : null, notes: planNotes.trim() })} className={`${btnNavy} flex-1 disabled:opacity-40`}>
+                {saveDayPlanMut.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr(`Save day plan (${planTeamSel.size} 👥 + ${planEmpSel.size} 👤)`, `Salvar plano (${planTeamSel.size} 👥 + ${planEmpSel.size} 👤)`, `Guardar plan (${planTeamSel.size} 👥 + ${planEmpSel.size} 👤)`)}
+              </button>
             </div>
           </div>
         </div>
@@ -4014,6 +4443,12 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
 
   const myTaskList = myTasks.data?.tasks ?? [];
   const myDoneCount = myTaskList.filter((t) => t.status === "done").length;
+  // Day plan for the employee: rows where they (or one of their teams) are
+  // planned for the selected date. Operational only — payroll is untouched.
+  const [planDate, setPlanDate] = useState(todayInput());
+  const myDayPlan = useQuery({ queryKey: ["my-day-plan", cid, session.userId, planDate], queryFn: () => api.getMyDayPlan({ companyId: cid, employeeId: session.userId, date: planDate }) });
+  const planEntries: DistributionEntryLite[] = (myDayPlan.data?.entries ?? []) as DistributionEntryLite[];
+  const planTaskIds = new Set(planEntries.map((e) => e.taskId).filter((t): t is number => t !== null));
   const myTaskGroups: { jobId: number; jobName: string; projectName: string; tasks: TaskLite[] }[] = [];
   for (const t of myTaskList) {
     const g = myTaskGroups.find((x) => x.jobId === t.jobId);
@@ -4293,11 +4728,41 @@ function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session;
             <p className="text-xs font-black uppercase tracking-wide text-[#f97316]">🔧 {g.jobName}{g.projectName ? <span className="font-semibold normal-case text-[var(--dim)]"> • {g.projectName}</span> : null}</p>
             <div className="mt-1.5 space-y-2">
               {g.tasks.map((t) => (
-                <TaskItem key={t.id} cid={cid} task={t} actorId={session.userId} canManage={session.role !== "funcionario"} manageControls={false} employees={[]} />
+                <div key={t.id}>
+                  {planTaskIds.has(t.id) && (
+                    <p className="mb-1 inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-black text-green-800 dark:bg-green-950/50 dark:text-green-200">📋 {tr("On the day plan", "No plano do dia", "En el plan del día")}</p>
+                  )}
+                  <TaskItem cid={cid} task={t} actorId={session.userId} canManage={session.role !== "funcionario"} manageControls={false} employees={[]} />
+                </div>
               ))}
             </div>
           </div>
         ))}
+      </section>
+
+      {/* Today's plan — where the manager planned you for the selected day */}
+      <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label={tr("Day plan", "Plano do dia", "Plan del día")}>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-bold">📋 {tr("My day plan", "Meu plano do dia", "Mi plan del día")}</h3>
+          <input type="date" className={inputCls} style={{ width: "auto" }} value={planDate} onChange={(e) => { if (e.target.value) setPlanDate(e.target.value); }} aria-label={tr("Plan date", "Data do plano", "Fecha del plan")} />
+        </div>
+        <p className="mt-0.5 text-xs text-[var(--dim)]">{tr("Where your manager planned you for this day — directly or with your team.", "Onde seu gerente planejou você neste dia — diretamente ou com seu time.", "Dónde te planeó tu gerente este día: directamente o con tu equipo.")}</p>
+        {myDayPlan.isPending && <p className="mt-2 text-sm text-[var(--dim)]">{tr("Loading plan…", "Carregando plano…", "Cargando plan…")}</p>}
+        {!myDayPlan.isPending && planEntries.length === 0 && (
+          <p className="mt-2 text-sm text-[var(--dim)]">{tr("Nothing planned for you on this day.", "Nada planejado para você neste dia.", "Nada planeado para ti este día.")}</p>
+        )}
+        <div className="mt-2 space-y-2">
+          {planEntries.map((e) => (
+            <div key={e.id} className="rounded-xl bg-[var(--surface2)] px-3 py-2 text-sm">
+              <p className="font-bold">🔧 {e.jobName}{e.projectName ? <span className="font-semibold text-[var(--dim)]"> • {e.projectName}</span> : null}</p>
+              <p className="mt-0.5 text-xs text-[var(--dim)]">
+                {e.teamId !== null ? `👥 ${e.teamName}` : `👤 ${e.employeeName}`}
+                {e.taskTitle ? ` • ✅ ${e.taskTitle}` : ` • ${tr("whole job", "o trabalho todo", "todo el trabajo")}`}
+              </p>
+              {e.notes && <p className="mt-0.5 text-xs italic text-[var(--dim)]">📝 {e.notes}</p>}
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* Today's entries */}

@@ -385,6 +385,7 @@ const jobOut = z.object({
   name: z.string(), scope: z.string(),
   status: z.string(), startDate: z.string(), endDate: z.string(),
   estimatedValue: z.number(), // cents, 0 = not set
+  isRepair: z.number(), // 1 = repair job
   laborCost: z.number(), // cents — approved timesheets tagged with this job
   laborHours: z.number(),
   crewIds: z.array(z.number()), // employees assigned to this specific job
@@ -400,7 +401,7 @@ function toJobOut(
     serviceId: j.serviceId ?? null,
     serviceName: svc?.name ?? "", serviceUnit: svc?.unit ?? "",
     name: j.name, scope: j.scope, status: j.status, startDate: j.startDate, endDate: j.endDate,
-    estimatedValue: j.estimatedValue,
+    estimatedValue: j.estimatedValue, isRepair: j.isRepair ?? 0,
     laborCost: fin.laborCost, laborHours: fin.laborHours,
     crewIds,
   };
@@ -1015,6 +1016,7 @@ const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD");
 const dispatchJobOut = z.object({
   jobId: z.number(), jobName: z.string(), serviceName: z.string(), serviceUnit: z.string(),
   jobStatus: z.string(), startDate: z.string(), endDate: z.string(),
+  isRepair: z.number(), // 1 = repair job
   crew: z.array(dispatchCrewMemberOut),
   teamIds: z.array(z.number()), // standing team associations (job_teams)
   tasks: z.array(jobTaskOut),
@@ -2092,7 +2094,7 @@ export const Actions = {
           const svc = j.serviceId != null ? svcById.get(j.serviceId) : undefined;
           return {
             jobId: j.id, jobName: j.name, serviceName: svc?.name ?? "", serviceUnit: svc?.unit ?? "",
-            jobStatus: j.status, startDate: j.startDate, endDate: j.endDate,
+            jobStatus: j.status, startDate: j.startDate, endDate: j.endDate, isRepair: j.isRepair ?? 0,
             crew, teamIds: teamIdsByJob.get(j.id) ?? [],
             tasks, taskTotal: tasks.length, taskDone: tasks.filter((t) => t.status === "done").length, unassignedCount: jobUnassigned,
           };
@@ -3102,7 +3104,7 @@ export const Actions = {
 
   /* ================= JOBS (trades within a project) ================= */
   createJob: defineAction({
-    request: z.object({ companyId, actorId: z.number(), projectId: z.number(), name: z.string().min(1), serviceId: z.number().nullable().default(null), scope: z.string().default(""), status: z.enum(["scheduled", "in_progress", "done"]).default("scheduled"), startDate: z.string().default(""), endDate: z.string().default(""), estimatedValue: money.default(0) }),
+    request: z.object({ companyId, actorId: z.number(), projectId: z.number(), name: z.string().min(1), serviceId: z.number().nullable().default(null), scope: z.string().default(""), status: z.enum(["scheduled", "in_progress", "done"]).default("scheduled"), startDate: z.string().default(""), endDate: z.string().default(""), estimatedValue: money.default(0), isRepair: z.number().int().min(0).max(1).default(0) }),
     response: z.object({ id: z.number() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
@@ -3115,14 +3117,14 @@ export const Actions = {
         const svc = await db.select().from(schema.services).where(and(eq(schema.services.companyId, args.companyId), eq(schema.services.id, args.serviceId))).limit(1);
         if (!svc[0]) throw new Error("Service not found in this company");
       }
-      const r = await db.insert(schema.jobs).values({ companyId: args.companyId, projectId: args.projectId, name: args.name, serviceId: args.serviceId, scope: args.scope, status: args.status, startDate: args.startDate, endDate: args.endDate, estimatedValue: args.estimatedValue }).$returningId();
+      const r = await db.insert(schema.jobs).values({ companyId: args.companyId, projectId: args.projectId, name: args.name, serviceId: args.serviceId, scope: args.scope, status: args.status, startDate: args.startDate, endDate: args.endDate, estimatedValue: args.estimatedValue, isRepair: args.isRepair }).$returningId();
       ctx.invalidateQueries();
       return { id: r[0]!.id };
     },
   }),
 
   updateJob: defineAction({
-    request: z.object({ companyId, actorId: z.number(), jobId: z.number(), name: z.string().optional(), serviceId: z.number().nullable().optional(), scope: z.string().optional(), status: z.enum(["scheduled", "in_progress", "done"]).optional(), startDate: z.string().optional(), endDate: z.string().optional(), estimatedValue: z.number().int().min(0).optional() }),
+    request: z.object({ companyId, actorId: z.number(), jobId: z.number(), name: z.string().optional(), serviceId: z.number().nullable().optional(), scope: z.string().optional(), status: z.enum(["scheduled", "in_progress", "done"]).optional(), startDate: z.string().optional(), endDate: z.string().optional(), estimatedValue: z.number().int().min(0).optional(), isRepair: z.number().int().min(0).max(1).optional() }),
     response: z.object({ ok: z.literal(true) }),
     async handler(ctx, args): Promise<{ ok: true }> {
       const db = ctx.db<typeof schema>();
@@ -3145,6 +3147,7 @@ export const Actions = {
       if (args.startDate !== undefined) patch.startDate = args.startDate;
       if (args.endDate !== undefined) patch.endDate = args.endDate;
       if (args.estimatedValue !== undefined) patch.estimatedValue = args.estimatedValue;
+      if (args.isRepair !== undefined) patch.isRepair = args.isRepair;
       await db.update(schema.jobs).set(patch).where(and(eq(schema.jobs.companyId, args.companyId), eq(schema.jobs.id, args.jobId)));
       ctx.invalidateQueries();
       return { ok: true as const };

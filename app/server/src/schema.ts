@@ -155,6 +155,7 @@ export const jobs = mysqlTable("jobs", {
   startDate: varchar("start_date", { length: 10 }).notNull().default(""),
   endDate: varchar("end_date", { length: 10 }).notNull().default(""),
   estimatedValue: int("estimated_value").notNull().default(0), // cents — optional, per-job quoted price
+  isRepair: int("is_repair").notNull().default(0), // 1 = repair job (flagged in Dispatch / project measurements)
 });
 
 // --- Tasks (checklist) inside a job ---

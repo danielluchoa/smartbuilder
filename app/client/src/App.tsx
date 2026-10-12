@@ -2600,6 +2600,7 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
   const [cjProject, setCjProject] = useState("");
   const [cjType, setCjType] = useState("");
   const [cjPhase, setCjPhase] = useState("");
+  const [cjRepair, setCjRepair] = useState(false);
   const [cjMsg, setCjMsg] = useState("");
   // Teams manager
   const [showTeams, setShowTeams] = useState(false);
@@ -2653,11 +2654,11 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
       const t = cjTypes.find((x) => x.id === Number(cjType));
       const p = cjPhases.find((x) => x.id === Number(cjPhase));
       const name = t && p ? `${t.name} — ${p.phaseNumber}. ${p.name}` : "";
-      return api.createJob({ companyId: cid, actorId: session.userId, projectId: Number(cjProject), name, scope: p?.description ?? "" });
+      return api.createJob({ companyId: cid, actorId: session.userId, projectId: Number(cjProject), name, scope: p?.description ?? "", isRepair: cjRepair ? 1 : 0 });
     },
     onSuccess: () => {
       invalidateDispatch();
-      setShowCreateJob(false); setCjProject(""); setCjType(""); setCjPhase(""); setCjMsg("");
+      setShowCreateJob(false); setCjProject(""); setCjType(""); setCjPhase(""); setCjRepair(false); setCjMsg("");
       setSaveMsg(tr("Job created. ✅", "Trabalho criado. ✅", "Trabajo creado. ✅"));
     },
     onError: () => setCjMsg(tr("Could not create this job.", "Não foi possível criar este trabalho.", "No se pudo crear este trabajo.")),
@@ -2826,6 +2827,10 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
                 </select>
               </Field>
             </div>
+            <label className="flex w-fit items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm font-semibold cursor-pointer">
+              <input type="checkbox" checked={cjRepair} onChange={(e) => setCjRepair(e.target.checked)} className="h-4 w-4 accent-[#f97316]" />
+              {tr("Repair", "Reparo", "Reparación")}
+            </label>
             {cjMsg && <p className="text-sm font-semibold text-red-600" role="alert">{cjMsg}</p>}
             <button className={`${btnNavy} w-full`} disabled={createJobFromPhase.isPending || !cjProject || !cjType || !cjPhase}>{createJobFromPhase.isPending ? tr("Creating…", "Criando…", "Creando…") : tr("Create job", "Criar trabalho", "Crear trabajo")}</button>
           </form>
@@ -2977,7 +2982,7 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
                 <div key={j.jobId} className="rounded-xl bg-[var(--surface2)] p-3">
                   <div className="flex items-start gap-2">
                     <button type="button" onClick={() => toggleJob(j.jobId)} aria-expanded={expanded} aria-label={expanded ? tr(`Collapse job ${j.jobName}`, `Recolher o trabalho ${j.jobName}`, `Contraer el trabajo ${j.jobName}`) : tr(`Expand job ${j.jobName} to see its tasks`, `Expandir o trabalho ${j.jobName} para ver suas tarefas`, `Expandir el trabajo ${j.jobName} para ver sus tareas`)} className="min-w-0 flex-1 text-left active:opacity-70">
-                      <p className="font-bold leading-snug">🔧 {j.jobName}{j.serviceName ? <span className="font-semibold text-[var(--dim)]"> • {j.serviceName}{j.serviceUnit ? ` (${j.serviceUnit})` : ""}</span> : null}</p>
+                      <p className="font-bold leading-snug">🔧 {j.jobName}{j.isRepair === 1 && <span className="ml-2 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">{tr("REPAIR", "REPARO", "REPARACIÓN")}</span>}{j.serviceName ? <span className="font-semibold text-[var(--dim)]"> • {j.serviceName}{j.serviceUnit ? ` (${j.serviceUnit})` : ""}</span> : null}</p>
                       <p className="mt-0.5 text-xs text-[var(--dim)]">{j.taskDone}/{j.taskTotal} {tr("tasks done", "tarefas concluídas", "tareas terminadas")}{j.startDate || j.endDate ? ` • ${j.startDate ? fmtDate(j.startDate) : "…"} → ${j.endDate ? fmtDate(j.endDate) : "…"}` : ""}</p>
                       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--surface)]" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={tr(`Task progress for ${j.jobName}: ${j.taskDone} of ${j.taskTotal} done`, `Andamento das tarefas de ${j.jobName}: ${j.taskDone} de ${j.taskTotal} concluídas`, `Progreso de las tareas de ${j.jobName}: ${j.taskDone} de ${j.taskTotal} terminadas`)}>
                         <div className="h-full rounded-full bg-green-600" style={{ width: `${pct}%` }} />

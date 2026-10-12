@@ -177,6 +177,7 @@ CREATE TABLE jobs (
   start_date      VARCHAR(10) NOT NULL DEFAULT '',
   end_date        VARCHAR(10) NOT NULL DEFAULT '',
   estimated_value INT NOT NULL DEFAULT 0,  -- cents, per-job quote
+  is_repair       INT NOT NULL DEFAULT 0,  -- 1 = repair job
   PRIMARY KEY (id),
   KEY idx_jobs_company (company_id),
   KEY idx_jobs_project (project_id)

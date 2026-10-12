@@ -4018,9 +4018,10 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
   const [jobStart, setJobStart] = useState(todayInput());
   const [jobEnd, setJobEnd] = useState("");
   const [jobEst, setJobEst] = useState("");
+  const [jobRepair, setJobRepair] = useState(false);
   const createJob = useMutation({
-    mutationFn: () => api.createJob({ companyId: cid, actorId: session.userId, projectId, name: jobPick.name, serviceId: jobPick.serviceId, scope: jobScope, status: jobStatus as "scheduled" | "in_progress" | "done", startDate: jobStart, endDate: jobEnd, estimatedValue: parseMoney(jobEst) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["project-detail", cid, projectId] }); qc.invalidateQueries({ queryKey: ["my-today", cid] }); setShowJobForm(false); setJobPick({ serviceId: null, name: "" }); setJobScope(""); setJobEst(""); },
+    mutationFn: () => api.createJob({ companyId: cid, actorId: session.userId, projectId, name: jobPick.name, serviceId: jobPick.serviceId, scope: jobScope, status: jobStatus as "scheduled" | "in_progress" | "done", startDate: jobStart, endDate: jobEnd, estimatedValue: parseMoney(jobEst), isRepair: jobRepair ? 1 : 0 }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["project-detail", cid, projectId] }); qc.invalidateQueries({ queryKey: ["my-today", cid] }); setShowJobForm(false); setJobPick({ serviceId: null, name: "" }); setJobScope(""); setJobEst(""); setJobRepair(false); },
   });
   /* Smart estimate: picked service's default rate × this project's
      measured quantity for that service. Shown as a tappable suggestion;
@@ -4323,6 +4324,11 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
               <Field label={tr("End", "Fim", "Fin")}><input aria-label={tr("New job end date", "Data de término do novo trabalho", "Fecha de fin del nuevo trabajo")} type="date" className={inputCls} value={jobEnd} onChange={(e) => setJobEnd(e.target.value)} /></Field>
             </div>
             <Field label={tr("Job estimated value (USD, optional)", "Valor estimado do trabalho (USD, opcional)", "Valor estimado del trabajo (USD, opcional)")}><input aria-label={tr("New job estimated value in US dollars", "Valor estimado do novo trabalho em dólares", "Valor estimado del nuevo trabajo en dólares")} className={inputCls} inputMode="decimal" value={jobEst} onChange={(e) => setJobEst(e.target.value)} placeholder="4,500.00" /></Field>
+            <label className={`flex w-full cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-3 text-sm font-bold ${jobRepair ? "border-orange-300 bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200" : "border-[var(--border)] bg-[var(--surface)]"}`}>
+              <input type="checkbox" checked={jobRepair} onChange={(e) => setJobRepair(e.target.checked)} className="h-5 w-5 shrink-0 accent-[#f97316]" />
+              🔧 {tr("Repair", "Reparo", "Reparación")}
+              {jobRepair && <span className="ml-auto rounded-full bg-orange-500 px-2 py-0.5 text-[10px] font-bold text-white">{tr("REPAIR", "REPARO", "REPARACIÓN")}</span>}
+            </label>
             <button className={`${btnNavy} w-full`} disabled={createJob.isPending || !jobPick.name.trim()}>{createJob.isPending ? tr("Saving…", "Salvando…", "Guardando…") : tr("Create job", "Criar trabalho", "Crear trabajo")}</button>
           </form>
         )}

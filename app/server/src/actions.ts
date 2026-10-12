@@ -1410,40 +1410,15 @@ async function requireVehicle(db: CtxDb, cid: string, vehicleId: number): Promis
   if (!rows[0]) throw new Error("Vehicle not found");
   return rows[0];
 }
-/* Demo fleet, seeded once per tenant (companies.fleetSeeded). Picks the
-   first two active field employees as the current users so the demo is
-   alive immediately; harmless when the roster is still empty. */
+/* Fleet starts EMPTY for every tenant. (Until 2026-10-12 this seeded two
+   demo vehicles per tenant — Daniel flagged it as pollution in a real
+   customer's company, BUILDER003. The seed is gone; this now only settles
+   the legacy fleetSeeded flag so old rows stay untouched.) */
 async function ensureFleetSeed(db: CtxDb): Promise<void> {
   try {
     const comps = await db.select().from(schema.companies);
     for (const c of comps) {
       if (c.fleetSeeded === 1) continue;
-      const existing = await db.select().from(schema.vehicles).where(eq(schema.vehicles.companyId, c.id));
-      if (existing.length === 0) {
-        const roleRank = (r: string) => (r === "funcionario" ? 0 : r === "gerente" ? 1 : 2);
-        const emps = (await db.select().from(schema.employees).where(eq(schema.employees.companyId, c.id)))
-          .filter((e) => e.status === "ativo" && e.role !== "cliente")
-          .sort((a, b) => roleRank(a.role) - roleRank(b.role));
-        const td = todayStr();
-        const v1 = await db.insert(schema.vehicles).values({
-          companyId: c.id, name: "Truck 1", make: "Ford", model: "F-150", year: 2021, plate: "", vin: "",
-          photoUrl: "", status: "active", mileage: 48250, oilIntervalMiles: 5000, oilIntervalMonths: 6,
-          lastOilMileage: 45000, lastOilDate: td, createdAt: new Date(),
-        }).$returningId();
-        const v2 = await db.insert(schema.vehicles).values({
-          companyId: c.id, name: "Van 2", make: "Ford", model: "Transit", year: 2020, plate: "", vin: "",
-          photoUrl: "", status: "active", mileage: 61900, oilIntervalMiles: 5000, oilIntervalMonths: 6,
-          lastOilMileage: 58000, lastOilDate: td, createdAt: new Date(),
-        }).$returningId();
-        const id1 = v1[0]!.id;
-        const id2 = v2[0]!.id;
-        if (emps[0]) await db.insert(schema.vehicleAssignments).values({ companyId: c.id, vehicleId: id1, employeeId: emps[0].id, assignedAt: new Date(), unassignedAt: null });
-        if (emps[1]) await db.insert(schema.vehicleAssignments).values({ companyId: c.id, vehicleId: id1, employeeId: emps[1].id, assignedAt: new Date(), unassignedAt: null });
-        if (emps[0]) await db.insert(schema.vehicleAssignments).values({ companyId: c.id, vehicleId: id2, employeeId: emps[0].id, assignedAt: new Date(), unassignedAt: null });
-        await db.insert(schema.vehicleMileageLogs).values({ companyId: c.id, vehicleId: id1, logDate: td, odometer: 48250, notes: "Demo seed — current odometer.", createdAt: new Date() });
-        await db.insert(schema.vehicleFuelLogs).values({ companyId: c.id, vehicleId: id1, logDate: td, gallons: 18.5, amount: 6850, odometer: 48250, projectId: null, notes: "Demo fill-up.", createdAt: new Date() });
-        await db.insert(schema.vehicleMaintenance).values({ companyId: c.id, vehicleId: id1, maintDate: td, type: "oil_change", cost: 8999, vendor: "Demo Auto Service", odometer: 45000, notes: "Demo oil change (sets the last-oil-change baseline).", receiptNote: "", projectId: null, createdAt: new Date() });
-      }
       await db.update(schema.companies).set({ fleetSeeded: 1 }).where(eq(schema.companies.id, c.id));
     }
   } catch { /* fleet tables may not exist yet before the migration runs */ }

@@ -3462,7 +3462,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
   const actorId = session.userId;
   const detailQ = useQuery({ queryKey: ["vehicle-detail", cid, vehicleId], queryFn: () => api.getVehicleDetail({ companyId: cid, actorId, vehicleId }) });
   const employeesQ = useQuery({ queryKey: ["employees", cid], queryFn: () => api.listEmployees({ companyId: cid }) });
-  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const [msg, setMsg] = useState("");
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["vehicle-detail", cid, vehicleId] });
@@ -3803,7 +3803,7 @@ function VehicleDetailView({ cid, session, vehicleId, fallbackName, onBack }: { 
 
 /* ---------------- Projects ---------------- */
 function Projects({ cid, session, onOpen, selected, onCloseDetail, onNewInvoice, pendingJobId, onConsumePendingJob }: { cid: string; session: Session; onOpen: (id: number) => void; selected: number | null; onCloseDetail: () => void; onNewInvoice?: (clientId: number | null, projectId: number | null) => void; pendingJobId?: number | null; onConsumePendingJob?: () => void }) {
-  const q = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const q = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const clients = useQuery({ queryKey: ["clients", cid], queryFn: () => api.listClients({ companyId: cid }) });
   const canManage = session.role !== "funcionario";
   const [showForm, setShowForm] = useState(false);
@@ -3961,7 +3961,7 @@ function Projects({ cid, session, onOpen, selected, onCloseDetail, onNewInvoice,
 }
 
 function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJobId, onInitialJobConsumed }: { cid: string; projectId: number; session: Session; onBack: () => void; onNewInvoice?: (clientId: number | null, projectId: number | null) => void; initialJobId?: number | null; onInitialJobConsumed?: () => void }) {
-  const q = useQuery({ queryKey: ["project-detail", cid, projectId], queryFn: () => api.getProjectDetail({ companyId: cid, projectId }) });
+  const q = useQuery({ queryKey: ["project-detail", cid, projectId], queryFn: () => api.getProjectDetail({ companyId: cid, projectId, actorId: session.userId }) });
   const [openJobId, setOpenJobId] = useState<number | null>(null);
   const [showReport, setShowReport] = useState(false);
   /* Deep link (e.g. tapping one of today's jobs in the Field tab): open that
@@ -4431,7 +4431,7 @@ function ProjectDetail({ cid, projectId, session, onBack, onNewInvoice, initialJ
 /* ---------------- Field ---------------- */
 function FieldView({ cid, session, onOpenJob }: { cid: string; session: Session; onOpenJob?: (projectId: number, jobId: number) => void }) {
   const qc = useQueryClient();
-  const projects = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const projects = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const active = useQuery({ queryKey: ["active-sheet", cid, session.userId], queryFn: () => api.getActiveSheet({ companyId: cid, employeeId: session.userId }) });
   const myToday = useQuery({ queryKey: ["my-today", cid, session.userId], queryFn: () => api.getMyToday({ companyId: cid, employeeId: session.userId }) });
   const myTasks = useQuery({ queryKey: ["my-tasks", cid, session.userId], queryFn: () => api.getMyTasks({ companyId: cid, employeeId: session.userId }) });
@@ -5332,7 +5332,7 @@ function Payroll({ cid, session }: { cid: string; session: Session }) {
 
 /* ---------------- Expenses ---------------- */
 function Expenses({ cid, session }: { cid: string; session: Session }) {
-  const projects = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const projects = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const q = useQuery({ queryKey: ["expenses", cid], queryFn: () => api.listExpenses({ companyId: cid }) });
   const qc = useQueryClient();
   const isManagerUser = session.role === "admin" || session.role === "gerente";
@@ -5489,7 +5489,7 @@ function dueFromTerms(issue: string, terms: string): string {
 function Invoices({ cid, session, selected, onSelect, prefill, onPrefillUsed }: { cid: string; session: Session; selected: number | null; onSelect: (id: number | null) => void; prefill?: { clientId: number | null; projectId: number | null } | null; onPrefillUsed?: () => void }) {
   const q = useQuery({ queryKey: ["invoices", cid], queryFn: () => api.listInvoices({ companyId: cid, actorId: session.userId }) });
   const clients = useQuery({ queryKey: ["clients", cid], queryFn: () => api.listClients({ companyId: cid }) });
-  const projects = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const projects = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [number, setNumber] = useState("");
@@ -5520,7 +5520,7 @@ function Invoices({ cid, session, selected, onSelect, prefill, onPrefillUsed }: 
   // Line items drafted in the create form (pulled from the project estimate or typed as extra costs).
   const [lines, setLines] = useState<{ description: string; quantity: string; rate: string; expenseId?: number }[]>([]);
   const [pullMsg, setPullMsg] = useState("");
-  const projDetail = useQuery({ queryKey: ["project-detail", cid, Number(projectId) || 0], queryFn: () => api.getProjectDetail({ companyId: cid, projectId: Number(projectId) }), enabled: !!projectId });
+  const projDetail = useQuery({ queryKey: ["project-detail", cid, Number(projectId) || 0], queryFn: () => api.getProjectDetail({ companyId: cid, projectId: Number(projectId), actorId: session.userId }), enabled: !!projectId });
   const projMaterials = useQuery({ queryKey: ["project-materials", cid, Number(projectId) || 0], queryFn: () => api.listProjectMaterials({ companyId: cid, projectId: Number(projectId) }), enabled: !!projectId });
   const updateLine = (i: number, patch: { description?: string; quantity?: string; rate?: string }) => setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   const linesTotal = lines.reduce((s, l) => s + Math.round((parseFloat(l.quantity.replace(",", ".")) || 0) * parseMoney(l.rate)), 0);
@@ -5689,7 +5689,7 @@ function Invoices({ cid, session, selected, onSelect, prefill, onPrefillUsed }: 
 function InvoiceDetail({ cid, invoiceId, session, onBack }: { cid: string; invoiceId: number; session: Session; onBack: () => void }) {
   const q = useQuery({ queryKey: ["invoice-detail", cid, invoiceId], queryFn: () => api.getInvoiceDetail({ companyId: cid, actorId: session.userId, invoiceId }) });
   const clientsQ = useQuery({ queryKey: ["clients", cid], queryFn: () => api.listClients({ companyId: cid }) });
-  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const qc = useQueryClient();
   const [desc, setDesc] = useState("");
   const [qty, setQty] = useState("1");
@@ -6236,7 +6236,7 @@ const emptyClientForm = (): ClientForm => ({ name: "", contactName: "", phone: "
 
 function Clients({ cid, session, onOpenProject, onOpenInvoice, onNewInvoice }: { cid: string; session: Session; onOpenProject?: (id: number) => void; onOpenInvoice?: (id: number) => void; onNewInvoice?: (clientId: number | null, projectId: number | null) => void }) {
   const clientsQ = useQuery({ queryKey: ["clients", cid], queryFn: () => api.listClients({ companyId: cid }) });
-  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid }) });
+  const projectsQ = useQuery({ queryKey: ["projects", cid], queryFn: () => api.listProjects({ companyId: cid, actorId: session.userId }) });
   const invoicesQ = useQuery({ queryKey: ["invoices", cid], queryFn: () => api.listInvoices({ companyId: cid, actorId: session.userId }) });
   const qc = useQueryClient();
   const canManage = session.role !== "funcionario";

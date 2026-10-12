@@ -1163,6 +1163,58 @@ function resolveAssigneeIds(args: { assigneeIds?: number[]; assigneeId?: number 
   return undefined;
 }
 
+/* Projects an employee is assigned to ("escalado") — the ONLY projects a
+   funcionario may see or clock into. Union of every assignment channel in
+   the model:
+     - assignments rows (project crew, or a specific job's crew)
+     - tasks assigned to him directly (task_assignees / legacy assignee_id)
+     - tasks assigned to a team he belongs to (task_teams)
+     - jobs associated to a team he belongs to (job_teams)
+     - distribution-plan rows for him or his teams (distribution_days)
+   Mirrors the semantics of taskVisibleTo / getMyToday / getDispatch. */
+async function employeeVisibleProjectIds(db: CtxDb, cid: string, employeeId: number): Promise<Set<number>> {
+  const visible = new Set<number>();
+  const assigns = await db.select().from(schema.assignments).where(and(eq(schema.assignments.companyId, cid), eq(schema.assignments.employeeId, employeeId)));
+  for (const a of assigns) visible.add(a.projectId);
+
+  const memberRows = await db.select().from(schema.teamMembers).where(and(eq(schema.teamMembers.companyId, cid), eq(schema.teamMembers.employeeId, employeeId)));
+  const myTeamIds = [...new Set(memberRows.map((m) => m.teamId))];
+
+  const jobRows = await db.select().from(schema.jobs).where(eq(schema.jobs.companyId, cid));
+  const projectByJob = new Map(jobRows.map((j) => [j.id, j.projectId]));
+  const addJob = (jobId: number | null | undefined) => {
+    if (jobId === null || jobId === undefined) return;
+    const pid = projectByJob.get(jobId);
+    if (pid !== undefined) visible.add(pid);
+  };
+
+  // Tasks assigned directly (join table + legacy single-assignee mirror)
+  const directRows = await db.select().from(schema.taskAssignees).where(and(eq(schema.taskAssignees.companyId, cid), eq(schema.taskAssignees.employeeId, employeeId)));
+  const directTaskIds = new Set(directRows.map((r) => r.taskId));
+  const legacyTasks = await db.select().from(schema.jobTasks).where(and(eq(schema.jobTasks.companyId, cid), eq(schema.jobTasks.assigneeId, employeeId)));
+  for (const t of legacyTasks) directTaskIds.add(t.id);
+
+  // Tasks assigned to one of his teams
+  if (myTeamIds.length > 0) {
+    const teamTaskRows = await db.select().from(schema.taskTeams).where(and(eq(schema.taskTeams.companyId, cid), inArray(schema.taskTeams.teamId, myTeamIds)));
+    for (const r of teamTaskRows) directTaskIds.add(r.taskId);
+    // Jobs associated to one of his teams
+    const jobTeamRows = await db.select().from(schema.jobTeams).where(and(eq(schema.jobTeams.companyId, cid), inArray(schema.jobTeams.teamId, myTeamIds)));
+    for (const r of jobTeamRows) addJob(r.jobId);
+  }
+  if (directTaskIds.size > 0) {
+    const taskRows = await db.select().from(schema.jobTasks).where(and(eq(schema.jobTasks.companyId, cid), inArray(schema.jobTasks.id, [...directTaskIds])));
+    for (const t of taskRows) addJob(t.jobId);
+  }
+
+  // Distribution plan: rows naming him or one of his teams
+  const distRows = await db.select().from(schema.distributionDays).where(eq(schema.distributionDays.companyId, cid));
+  for (const d of distRows) {
+    if (d.employeeId === employeeId || (d.teamId !== null && myTeamIds.includes(d.teamId))) addJob(d.jobId);
+  }
+  return visible;
+}
+
 async function taskVisibleTo(db: CtxDb, cid: string, employeeId: number, task: JobTaskRow, knownIds?: number[]): Promise<boolean> {
   const ids = knownIds ?? (await taskAssigneeIds(db, cid, task));
   if (ids.includes(employeeId)) return true;
@@ -1913,12 +1965,22 @@ export const Actions = {
 
   /* ================= PROJECTS ================= */
   listProjects: defineAction({
-    request: z.object({ companyId }),
+    request: z.object({ companyId, actorId: z.number().optional() }),
     response: z.object({ projects: z.array(projectOut) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       await assertInternalActor(db, args);
-      const rows = await db.select().from(schema.projects).where(eq(schema.projects.companyId, args.companyId)).orderBy(desc(schema.projects.id));
+      let rows = await db.select().from(schema.projects).where(eq(schema.projects.companyId, args.companyId)).orderBy(desc(schema.projects.id));
+      // Employee visibility rule (Daniel, 09/10/2026): a funcionario only
+      // receives the projects he is assigned to. Admin/gerente (and legacy
+      // calls without an actor) keep the full tenant list.
+      if (args.actorId !== undefined) {
+        const actor = await getActor(db, args.companyId, args.actorId);
+        if (actor && actor.role === "funcionario") {
+          const visible = await employeeVisibleProjectIds(db, args.companyId, actor.id);
+          rows = rows.filter((p) => visible.has(p.id));
+        }
+      }
       const clientRows = await db.select().from(schema.clients).where(eq(schema.clients.companyId, args.companyId));
       const cm = new Map(clientRows.map((c) => [c.id, c.name]));
       // Profitability per project: approved labor (auto from timesheets) + materials/expenses
@@ -1942,7 +2004,7 @@ export const Actions = {
   }),
 
   getProjectDetail: defineAction({
-    request: z.object({ companyId, projectId: z.number() }),
+    request: z.object({ companyId, projectId: z.number(), actorId: z.number().optional() }),
     response: z.object({
       project: projectOut.nullable(),
       team: z.array(employeeOut),
@@ -1961,6 +2023,16 @@ export const Actions = {
       const projs = await db.select().from(schema.projects).where(and(eq(schema.projects.companyId, args.companyId), eq(schema.projects.id, args.projectId))).limit(1);
       const proj = projs[0];
       if (!proj) return { project: null, team: [], expensesTotal: 0, laborCost: 0, totalCost: 0, profit: 0, profitMargin: 0, progressFeed: [], jobs: [], jobsLabor: [] };
+      // Same employee visibility rule as listProjects: a funcionario cannot
+      // open the detail of a project he is not assigned to (answered with
+      // the not-found shape so unassigned projects stay undiscoverable).
+      if (args.actorId !== undefined) {
+        const actor = await getActor(db, args.companyId, args.actorId);
+        if (actor && actor.role === "funcionario") {
+          const visible = await employeeVisibleProjectIds(db, args.companyId, actor.id);
+          if (!visible.has(proj.id)) return { project: null, team: [], expensesTotal: 0, laborCost: 0, totalCost: 0, profit: 0, profitMargin: 0, progressFeed: [], jobs: [], jobsLabor: [] };
+        }
+      }
       const cl = proj.clientId ? await db.select().from(schema.clients).where(eq(schema.clients.id, proj.clientId)).limit(1) : [];
       const assigns = await db.select().from(schema.assignments).where(eq(schema.assignments.projectId, args.projectId));
       const empIds = assigns.map((a) => a.employeeId);
@@ -3453,6 +3525,12 @@ export const Actions = {
       const empRows = await db.select().from(schema.employees).where(and(eq(schema.employees.companyId, args.companyId), eq(schema.employees.id, args.employeeId))).limit(1);
       const emp = empRows[0];
       if (!emp) throw new Error("Employee not found");
+      // Clock-in follows the same assignment rule: an employee can only
+      // clock into a project he is assigned to (directly or via a team).
+      if (emp.role === "funcionario") {
+        const visible = await employeeVisibleProjectIds(db, args.companyId, emp.id);
+        if (!visible.has(args.projectId)) throw new Error("You are not assigned to this project.");
+      }
       // The picked job must belong to this project; anything else is ignored.
       let job: typeof schema.jobs.$inferSelect | undefined;
       if (args.jobId !== null) {

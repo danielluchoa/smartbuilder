@@ -2827,9 +2827,10 @@ function DispatchView({ cid, session }: { cid: string; session: Session }) {
                 </select>
               </Field>
             </div>
-            <label className="flex w-fit items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm font-semibold cursor-pointer">
-              <input type="checkbox" checked={cjRepair} onChange={(e) => setCjRepair(e.target.checked)} className="h-4 w-4 accent-[#f97316]" />
-              {tr("Repair", "Reparo", "Reparación")}
+            <label className={`flex w-full cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-3 text-sm font-bold ${cjRepair ? "border-orange-300 bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-200" : "border-[var(--border)] bg-[var(--surface2)]"}`}>
+              <input type="checkbox" checked={cjRepair} onChange={(e) => setCjRepair(e.target.checked)} className="h-5 w-5 shrink-0 accent-[#f97316]" />
+              🔧 {tr("Repair", "Reparo", "Reparación")}
+              {cjRepair && <span className="ml-auto rounded-full bg-orange-500 px-2 py-0.5 text-[10px] font-bold text-white">{tr("REPAIR", "REPARO", "REPARACIÓN")}</span>}
             </label>
             {cjMsg && <p className="text-sm font-semibold text-red-600" role="alert">{cjMsg}</p>}
             <button className={`${btnNavy} w-full`} disabled={createJobFromPhase.isPending || !cjProject || !cjType || !cjPhase}>{createJobFromPhase.isPending ? tr("Creating…", "Criando…", "Creando…") : tr("Create job", "Criar trabalho", "Crear trabajo")}</button>

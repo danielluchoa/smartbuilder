@@ -5007,7 +5007,7 @@ export const Actions = {
   }),
 
   createVehicle: defineAction({
-    request: z.object({ companyId, actorId: z.number(), name: z.string().min(1), make: z.string().default(""), model: z.string().default(""), year: z.number().int().min(0).max(2100).default(0), plate: z.string().default(""), vin: z.string().default(""), photoUrl: z.string().default(""), status: z.enum(["active", "in_shop", "inactive"]).default("active"), mileage: z.number().int().min(0).default(0) }),
+    request: z.object({ companyId, actorId: z.number(), name: z.string().min(1), make: z.string().default(""), model: z.string().default(""), year: z.number().int().min(0).max(2100).default(0), plate: z.string().default(""), vin: z.string().default(""), photoUrl: z.string().default(""), status: z.enum(["active", "in_shop", "inactive"]).default("active"), mileage: z.number().int().min(0).default(0), ezpass: z.number().int().min(0).max(1).default(0), tagNumber: z.string().max(40).default("") }),
     response: z.object({ id: z.number() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
@@ -5018,7 +5018,7 @@ export const Actions = {
       const r = await db.insert(schema.vehicles).values({
         companyId: args.companyId, name: args.name.trim(), make: args.make.trim(), model: args.model.trim(),
         year: args.year, plate: args.plate.trim(), vin: args.vin.trim(), photoUrl: args.photoUrl,
-        status: args.status, mileage: args.mileage, createdAt: new Date(),
+        status: args.status, mileage: args.mileage, ezpass: args.ezpass, tagNumber: args.tagNumber.trim(), createdAt: new Date(),
       }).$returningId();
       ctx.invalidateQueries();
       return { id: r[0]!.id };

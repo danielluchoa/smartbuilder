@@ -3361,6 +3361,8 @@ function FleetView({ cid, session }: { cid: string; session: Session }) {
   const [fVin, setFVin] = useState("");
   const [fMileage, setFMileage] = useState("");
   const [fPhoto, setFPhoto] = useState("");
+  const [fEzpass, setFEzpass] = useState(false);
+  const [fTagNumber, setFTagNumber] = useState("");
   const photoRef = useRef<HTMLInputElement | null>(null);
 
   const vehiclesQ = useQuery({ queryKey: ["vehicles", cid], queryFn: () => api.listVehicles({ companyId: cid, actorId }) });
@@ -3371,10 +3373,11 @@ function FleetView({ cid, session }: { cid: string; session: Session }) {
       companyId: cid, actorId, name: fName, make: fMake, model: fModel,
       year: fYear.trim() ? Number(fYear) || 0 : 0, plate: fPlate, vin: fVin,
       photoUrl: fPhoto, status: "active", mileage: fMileage.trim() ? Math.round(Number(fMileage.replace(/[^0-9.]/g, "")) || 0) : 0,
+      ezpass: fEzpass ? 1 : 0, tagNumber: fTagNumber,
     }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["vehicles", cid] });
-      setShowForm(false); setFName(""); setFMake(""); setFModel(""); setFYear(""); setFPlate(""); setFVin(""); setFMileage(""); setFPhoto("");
+      setShowForm(false); setFName(""); setFMake(""); setFModel(""); setFYear(""); setFPlate(""); setFVin(""); setFMileage(""); setFPhoto(""); setFEzpass(false); setFTagNumber("");
       setMsg(tr("Vehicle added. ✅", "Veículo adicionado. ✅", "Vehículo agregado. ✅"));
       setSelected(r.id);
     },
@@ -3411,6 +3414,13 @@ function FleetView({ cid, session }: { cid: string; session: Session }) {
             <Field label={tr("Current mileage (mi)", "Quilometragem atual (mi)", "Millaje actual (mi)")}><input aria-label={tr("Current odometer in miles", "Odômetro atual em milhas", "Odómetro actual en millas")} className={inputCls} inputMode="numeric" value={fMileage} onChange={(e) => setFMileage(e.target.value)} placeholder="48,250" /></Field>
           </div>
           <Field label={tr("VIN (optional)", "VIN (opcional)", "VIN (opcional)")}><input aria-label={tr("Vehicle VIN", "VIN do veículo", "VIN del vehículo")} className={inputCls} value={fVin} onChange={(e) => setFVin(e.target.value)} placeholder="1FTFW1E50MFA00000" /></Field>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="ezpass-check-new" checked={fEzpass} onChange={(e) => setFEzpass(e.target.checked)} className="h-4 w-4" />
+            <label htmlFor="ezpass-check-new" className="text-sm font-semibold">{tr("Has EZPass", "Tem EZPass", "Tiene EZPass")}</label>
+          </div>
+          {fEzpass && (
+            <Field label={tr("Tag number", "Número da tag", "Número de tag")}><input aria-label={tr("EZPass tag number", "Número da tag EZPass", "Número de tag EZPass")} className={inputCls} value={fTagNumber} onChange={(e) => setFTagNumber(e.target.value)} placeholder="123456789" /></Field>
+          )}
           <div>
             <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--dim)]">{tr("Photo (optional)", "Foto (opcional)", "Foto (opcional)")}</p>
             {fPhoto ? <img src={safeImgSrc(fPhoto)} alt={tr("New vehicle photo preview", "Prévia da foto do novo veículo", "Vista previa de la foto del nuevo vehículo")} className="mb-2 h-32 w-full rounded-xl object-cover" /> : null}

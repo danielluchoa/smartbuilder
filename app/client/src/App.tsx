@@ -1869,6 +1869,7 @@ export function App() {
             <LanguageToggle compact />
             <NotificationBell cid={cid} session={session} onNavigate={goNotification} />
             <button aria-label={tr("Sign out / switch user", "Sair / trocar de usuário", "Cerrar sesión / cambiar de usuario")} onClick={logout} className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold active:opacity-70">{tr("Switch user", "Trocar usuário", "Cambiar de usuario")}</button>
+            <button aria-label={tr("Sign out", "Sair", "Cerrar sesión")} onClick={logout} className="shrink-0 rounded-lg bg-[#f97316] px-3 py-2 text-xs font-bold text-white active:opacity-80">{tr("Sign out", "Sair", "Cerrar sesión")}</button>
           </div>
         </div>
       </header>
